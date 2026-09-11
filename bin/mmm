@@ -1,0 +1,352 @@
+#!/usr/bin/env bash
+# mmm — canonical wiki store, symlinked into each project's .omc/wiki. See ~/mmm/README.md.
+set -euo pipefail
+
+MMM_HOME="${MMM_HOME:-$HOME/.mmm}"  # private data. ~/mmm (no dot) is the tool itself — bin/, README, .git
+MMM_SELF="${BASH_SOURCE[0]}"
+[ -L "$MMM_SELF" ] && MMM_SELF="$(readlink "$MMM_SELF")"  # one hop is all we ever create
+MMM_BIN="$(cd "$(dirname "$MMM_SELF")" && pwd)"
+REGISTRY="$MMM_HOME/registry.json"
+
+die() { echo "mmm: $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "requires '$1' on PATH"; }
+need jq; need git; need rsync; need python3; need rg
+
+# self-heals on a fresh machine — nothing else bootstraps ~/.mmm before the first real command
+if [ ! -f "$REGISTRY" ]; then
+  mkdir -p "$MMM_HOME"
+  printf '{\n  "searchRoots": [],\n  "projects": {}\n}\n' > "$REGISTRY"
+  echo "mmm: first run — created $REGISTRY (empty; add your own dirs to searchRoots if you want auto-rediscovery)"
+fi
+
+realpath_of() { python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$1"; }
+expand_tilde() { printf '%s' "${1/#\~/$HOME}"; }
+
+# .git/info/exclude lives in the shared common dir, not per-worktree — `$root/.git` is a plain
+# FILE (a `gitdir: ...` pointer), not a directory, inside a `git worktree add` checkout.
+git_exclude_path() {
+  local root="$1" common
+  common=$(git -C "$root" rev-parse --git-common-dir)
+  [[ "$common" = /* ]] || common="$root/$common"
+  printf '%s/info/exclude' "$common"
+}
+
+ensure_omc_ignored() {
+  local root="$1"
+  git -C "$root" check-ignore -q .omc 2>/dev/null && return 0
+  echo '.omc' >> "$(git_exclude_path "$root")"
+  git -C "$root" check-ignore -q .omc
+}
+
+# --- registry-backed project path resolution ---------------------------------
+resolve_path() {
+  local key="$1" remote hint origin
+  remote=$(jq -r --arg k "$key" '.projects[$k].remote // empty' "$REGISTRY")
+  [ -n "$remote" ] || return 1
+  hint=$(jq -r --arg k "$key" '.projects[$k].pathHint // empty' "$REGISTRY")
+  hint=$(expand_tilde "$hint")
+  if [ -n "$hint" ] && git -C "$hint" rev-parse --git-dir >/dev/null 2>&1; then
+    origin=$(git -C "$hint" remote get-url origin 2>/dev/null || true)
+    if [ "$origin" = "$remote" ]; then echo "$hint"; return 0; fi
+  fi
+  local root
+  while IFS= read -r root; do
+    root=$(expand_tilde "$root")
+    [ -d "$root" ] || continue
+    local gitdir repo
+    while IFS= read -r gitdir; do
+      repo="${gitdir%/.git}"
+      origin=$(git -C "$repo" remote get-url origin 2>/dev/null || true)
+      if [ "$origin" = "$remote" ]; then echo "$repo"; return 0; fi
+    done < <(find "$root" -maxdepth 5 -type d -name .git 2>/dev/null)
+  done < <(jq -r '.searchRoots[]' "$REGISTRY")
+  return 1
+}
+
+# --- status --------------------------------------------------------------
+status_one() {
+  local key="$1" wiki="$2" store="$3"
+  if [ -L "$wiki" ]; then
+    if [ -e "$wiki" ]; then
+      if [ "$(realpath_of "$wiki")" = "$(realpath_of "$store")" ]; then
+        echo "  $key: linked ✓  ($wiki -> $store)"
+      else
+        echo "  $key: linked to UNEXPECTED target ($wiki -> $(readlink "$wiki"))"
+      fi
+    else
+      echo "  $key: DANGLING symlink ($wiki -> $(readlink "$wiki") — target missing)"
+    fi
+  elif [ -d "$wiki" ]; then
+    echo "  $key: not yet initialized (real directory at $wiki)"
+  else
+    echo "  $key: no wiki directory yet"
+  fi
+}
+
+cmd_status() {
+  echo "global:"
+  status_one "global" "$HOME/.omc/wiki" "$MMM_HOME/global"
+  echo "projects:"
+  local k path
+  for k in $(jq -r '.projects | keys[]' "$REGISTRY"); do
+    if path=$(resolve_path "$k"); then
+      status_one "$k" "$path/.omc/wiki" "$MMM_HOME/projects/$k"
+    else
+      echo "  $k: absent on this machine (registered, not found)"
+    fi
+  done
+}
+
+# --- init ------------------------------------------------------------------
+seed_index() {
+  local proj_root="$1" store="$2" idx="$2/index.md" found=()
+  local f
+  for f in README.md README.rst CLAUDE.md AGENTS.md; do
+    [ -f "$proj_root/$f" ] && found+=("$f")
+  done
+  [ -f "$idx" ] || { printf '# Wiki Index\n\n' > "$idx"; }
+  if [ "${#found[@]}" -gt 0 ] && ! grep -q '^## Existing project docs' "$idx" 2>/dev/null; then
+    {
+      printf '\n## Existing project docs\n\n'
+      for f in "${found[@]}"; do printf -- '- `%s` at project root\n' "$f"; done
+    } >> "$idx"
+  fi
+}
+
+ensure_claude_md() {
+  local root="$1"
+  [ -f "$root/CLAUDE.md" ] && return 0
+  need claude  # a prerequisite for init, same as import/ask — not optional
+  echo "mmm: no CLAUDE.md in $root — running claude /init (non-interactive)"
+  ( cd "$root" && claude -p "/init" )
+}
+
+init_one() {
+  local key="$1" root="$2" wiki="$3" store="$4" seed="$5" force_merge="$6"
+  if [ "$key" != "global" ]; then
+    ensure_omc_ignored "$root" || die "could not confirm .omc is git-ignored in $root — refusing to init"
+    [ "$seed" = 1 ] && ensure_claude_md "$root"
+  fi
+  if [ -L "$wiki" ] && [ -e "$wiki" ] && [ "$(realpath_of "$wiki")" = "$(realpath_of "$store")" ]; then
+    echo "mmm: $key already initialized"
+    return 0
+  fi
+  local first_time=0
+  if [ ! -d "$store" ]; then mkdir -p "$store"; first_time=1; fi
+  if [ -e "$wiki" ] && [ ! -L "$wiki" ]; then
+    # a second worktree/clone of the same remote resolves to the same key/store on purpose
+    # (one project, one wiki) — but if it independently grew real content, merging blind
+    # would let same-named files silently clobber the first checkout's version.
+    if [ "$first_time" != 1 ] && [ "$force_merge" != 1 ] \
+        && find "$wiki" -mindepth 1 -print -quit 2>/dev/null | grep -q .; then
+      die "'$key' is already initialized (from a different checkout) and $wiki has its own content — \
+refusing to silently merge, same-named files would be overwritten. Compare $wiki against $store \
+yourself, then re-run with 'mmm init $root --merge' if that's really what you want."
+    fi
+    rsync -a "$wiki"/ "$store"/
+    rm -rf "$wiki"
+    # raw move only — placement/frontmatter/size normalization is optional and separate,
+    # not something init does for you
+    echo "mmm: moved existing $wiki content into $store as-is — run 'mmm import $store' to normalize it (placement rule, frontmatter, page budget)"
+  elif [ -L "$wiki" ]; then
+    rm "$wiki"
+  fi
+  mkdir -p "$(dirname "$wiki")"
+  ln -s "$store" "$wiki"
+  if [ "$first_time" = 1 ] && [ "$seed" = 1 ]; then
+    seed_index "$root" "$store"
+  fi
+  echo "mmm: initialized $key -> $store (linked at $wiki)"
+}
+
+cmd_init() {
+  local target="$1" force_merge=0
+  [ "${2:-}" = "--merge" ] && force_merge=1
+  if [ "$target" = "--global" ]; then
+    init_one "global" "$HOME/.omc" "$HOME/.omc/wiki" "$MMM_HOME/global" 0 "$force_merge"
+    return
+  fi
+  local path origin key
+  path=$(cd "$target" && pwd)
+  origin=$(git -C "$path" remote get-url origin 2>/dev/null) || die "not a git repo with an origin remote: $path"
+  key=$(jq -r --arg r "$origin" '.projects | to_entries[] | select(.value.remote==$r) | .key' "$REGISTRY" | head -1)
+  if [ -z "$key" ]; then
+    key=$(basename "$path")
+    echo "mmm: registering new project '$key' (remote $origin)"
+    local tmp; tmp=$(mktemp)
+    jq --arg k "$key" --arg r "$origin" --arg p "$path" \
+      '.projects[$k] = {remote: $r, pathHint: $p}' "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+  else
+    echo "mmm: '$key' already registered (remote $origin) — same project, this is another checkout/worktree of it, sharing its wiki"
+  fi
+  init_one "$key" "$path" "$path/.omc/wiki" "$MMM_HOME/projects/$key" 1 "$force_merge"
+}
+
+# --- doctor ------------------------------------------------------------------
+cmd_doctor() {
+  local fail=0
+  echo "== mmm doctor =="
+  echo "-- secret scan --"
+  if grep -rniE 'ticket=|token=|secret|password' "$MMM_HOME" \
+      --include='*.json' --include='*.md' 2>/dev/null | grep -v '^Binary'; then
+    echo "FAIL: possible secrets found above"; fail=1
+  else
+    echo "PASS: no secret patterns found"
+  fi
+  echo "-- git-ignore --"
+  local k path
+  for k in $(jq -r '.projects | keys[]' "$REGISTRY"); do
+    if path=$(resolve_path "$k"); then
+      if git -C "$path" check-ignore -q .omc; then
+        echo "PASS: $k .omc is ignored"
+      else
+        echo "REPAIR: $k .omc not ignored, adding to $(git_exclude_path "$path")"
+        if ensure_omc_ignored "$path"; then echo "PASS: $k now ignored"; else echo "FAIL: $k still not ignored"; fail=1; fi
+      fi
+    fi
+  done
+  echo "-- symlink health --"
+  cmd_status
+  echo "-- links / index / size --"
+  python3 "$MMM_BIN/mmm-doctor.py" "$MMM_HOME" || fail=1
+  echo "-- claude/ subset plugins --"
+  if [ -f "$MMM_HOME/claude/settings.json" ]; then
+    local p val
+    for p in ponytail caveman; do
+      val=$(jq -r --arg p "$p" '.enabledPlugins // {} | to_entries[] | select(.key | startswith($p)) | .value' \
+        "$MMM_HOME/claude/settings.json" 2>/dev/null | head -1)
+      if [ "$val" = "true" ]; then echo "PASS: $p enabled"; else echo "WARN: $p not confirmed enabled"; fi
+    done
+  else
+    echo "SKIP: no claude/settings.json staged yet"
+  fi
+  if [ "$fail" = 0 ]; then echo "mmm doctor: ALL CLEAR"; else echo "mmm doctor: ISSUES FOUND"; exit 1; fi
+}
+
+# --- pack / unpack -----------------------------------------------------------
+cmd_pack() {
+  need 7z
+  local projects="" out="" no_global=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) projects="$2"; shift 2 ;;
+      --out) out="$2"; shift 2 ;;
+      --no-global) no_global=1; shift ;;
+      *) die "unknown pack option: $1" ;;
+    esac
+  done
+  echo "mmm: running doctor before packing..."
+  cmd_doctor  # full battery, not just secrets — its own "ISSUES FOUND" exits 1 and stops pack here
+  [ -n "$out" ] || out="mmm-$(date +%Y%m%d).7z"
+  local args=(registry.json)  # bin/ lives in ~/mmm (the tool), not ~/.mmm (the data) — reinstall the tool separately
+  [ "$no_global" = 1 ] || args+=(global)
+  [ -d "$MMM_HOME/claude" ] && args+=(claude)
+  if [ -n "$projects" ]; then
+    IFS=',' read -ra keys <<< "$projects"
+    local key
+    for key in "${keys[@]}"; do
+      [ -d "$MMM_HOME/projects/$key" ] || die "unknown/absent project: $key"
+      args+=("projects/$key")
+    done
+  else
+    [ -d "$MMM_HOME/projects" ] && args+=(projects)
+  fi
+  ( cd "$MMM_HOME" && 7z a -mx=9 -mhe=on -mem=AES256 -p "$out" "${args[@]}" )
+  echo "mmm: wrote $out"
+}
+
+cmd_unpack() {
+  need 7z
+  local archive="$1" into="${MMM_HOME}"
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in --into) into="$2"; shift 2 ;; *) die "unknown unpack option: $1" ;; esac
+  done
+  mkdir -p "$into"
+  7z x "$archive" -o"$into"
+  echo "mmm: unpacked into $into — now run 'mmm init <path>' for each project present on this machine"
+}
+
+# --- query / ask ---------------------------------------------------------
+cmd_query() { python3 "$MMM_BIN/mmm-query.py" "$MMM_HOME" "$@"; }
+
+cmd_ask() {
+  need claude
+  local q="$*" pattern
+  # a question isn't a literal search term — reduce to keywords (rg alternation) before searching;
+  # `mmm query` itself stays literal, this reduction is ask-only
+  pattern=$(python3 -c "
+import re, sys
+stop = set('a an the is are was were be been being of to for in on at by with from as it its '
+           'this that what which who whom how do does did can could would should will shall '
+           'not no yes i you your my me we they he she and or if but'.split())
+words = re.findall(r'[A-Za-z0-9_]+', sys.argv[1].lower())
+kw = [w for w in words if w not in stop and len(w) > 2]
+print('|'.join(dict.fromkeys(kw)) if kw else sys.argv[1])
+" "$q")
+  local hits
+  hits=$(python3 "$MMM_BIN/mmm-query.py" "$MMM_HOME" --json "$pattern") || die "mmm query found nothing relevant to: $q"
+  printf '%s\n' "$hits" | claude -p "Given ONLY these wiki excerpts (JSON), answer concisely: $q
+Cite the page filename(s) you used. If the excerpts don't answer it, say so."
+}
+
+# --- import ------------------------------------------------------------------
+cmd_import() {
+  need claude
+  local src="$1"
+  [ -e "$src" ] || die "not found: $src"
+  src=$(cd "$(dirname "$src")" && pwd)/$(basename "$src")
+  local rules="$MMM_BIN/../content-rules.md"
+  [ -f "$rules" ] || die "content-rules.md missing at $rules — mmm install is incomplete"
+  exec claude "Import $src into the mmm wiki (canonical store: \$MMM_HOME=$MMM_HOME; global/ and
+projects/<key>/ are its two tiers, each symlinked from ~/.omc/wiki or a project's own .omc/wiki).
+
+Read $rules for the content rules (page format, placement rule, size budget, tasks.md
+convention) before doing anything else.
+
+Read $src, decide the right destination(s) under $MMM_HOME — global and/or whichever project(s)
+this content is actually about (not necessarily just the one I'm standing in). If it covers more
+than one topic or project, split it across multiple pages/destinations rather than forcing one.
+Normalize into properly-formatted pages with YAML frontmatter, update the relevant index.md
+file(s), then run 'mmm doctor' and fix anything it flags before you're done."
+}
+
+# --- dispatch ----------------------------------------------------------------
+usage() {
+  cat <<'EOF'
+mmm — canonical wiki store + symlink adoption + query
+usage:
+  mmm status                         link-health check (default)
+  mmm init <path> | --global [--merge]   one-time: move+link a project's/global wiki into ~/.mmm
+                                      (a worktree/second clone of an already-initialized remote
+                                       shares that project's wiki; --merge only if it grew its own)
+  mmm doctor                         full health check (links, index, secrets, git-ignore)
+  mmm pack [--project k1,k2] [--out f] [--no-global]   encrypted archive of ~/.mmm
+  mmm unpack <archive> [--into dir]  extract an archive
+  mmm query "<term>" [--project k] [--global-only] [--json]   instant, no LLM
+  mmm ask "<question>"               one cheap claude -p call, scoped to query's hits
+  mmm import <file-or-folder>        interactive claude session: read, place, normalize into pages
+EOF
+}
+
+if [ $# -eq 0 ]; then
+  usage
+  echo
+  echo "status:"
+  cmd_status
+  exit 0
+fi
+
+cmd="$1"; shift
+case "$cmd" in
+  status) cmd_status ;;
+  init) [ $# -ge 1 ] || die "usage: mmm init <path>|--global [--merge]"; cmd_init "$@" ;;
+  doctor) cmd_doctor ;;
+  pack) cmd_pack "$@" ;;
+  unpack) [ $# -ge 1 ] || die "usage: mmm unpack <archive>"; cmd_unpack "$@" ;;
+  query) cmd_query "$@" ;;
+  ask) cmd_ask "$@" ;;
+  import) [ $# -ge 1 ] || die "usage: mmm import <file-or-folder>"; cmd_import "$@" ;;
+  -h|--help|help) usage ;;
+  *) usage; die "unknown command: $cmd" ;;
+esac

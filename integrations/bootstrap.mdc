@@ -1,0 +1,43 @@
+---
+description: Load global metadata from CLAUDE.md and OMC wiki; route wiki tools correctly
+alwaysApply: true
+---
+
+# Bootstrap (Claude + Cursor parity)
+
+On sessions involving multiple projects or architecture decisions:
+
+1. **Read** `~/.claude/CLAUDE.md` and `~/.omc/wiki/index.md` before acting.
+2. Follow all rules in `CLAUDE.md`.
+
+## Wiki routing
+
+Both `~/.omc/wiki/` and every `<repo>/.omc/wiki/` are symlinks into one canonical store,
+`~/.mmm/` (see `~/mmm/README.md`). The paths above still work unchanged — read/write them
+exactly as before.
+
+| Scope | Path | Tool (Claude Code) | Tool (Cursor) |
+|-------|------|---------------------|----------------|
+| Cross-project | `~/.omc/wiki/` | `global-wiki` skill — Read/Write/Grep | Plain file read/write — no MCP access here either |
+| Project-local | `<repo>/.omc/wiki/` | OMC `wiki_*` MCP | Plain file read/write — Cursor has no MCP access |
+
+`wiki_*` MCP is sandboxed to the worktree and Cursor doesn't have it at all — in Cursor, always
+fall back to reading/editing `.omc/wiki/*.md` as plain files, same as the global tier already
+requires for both editors.
+
+`mmm` (on `PATH` once installed) is a plain shell tool, not editor-specific — `mmm query "<term>"`
+(instant, no LLM) and `mmm status`/`mmm doctor` work identically from a Cursor terminal. `mmm init
+<path>` is the one-time setup that links a project's wiki in; safe to re-run, does nothing if
+already linked.
+
+After nontrivial research, write findings to `~/.omc/wiki/` before ending the task — bite-sized,
+one topic per page, update an existing page before creating a new one.
+
+## Subagents
+
+- Read-only exploration (lookups, searches): prefer `simple-search` or `explore` Task subagents.
+- Subagents inherit ponytail rules (YAGNI, shortest diff).
+
+## Project context
+
+If the repo has a project `CLAUDE.md`, read it after this bootstrap.
