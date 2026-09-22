@@ -4,9 +4,6 @@ The rules every wiki page in `~/.mmm` follows — part of the tool, not the data
 generic rules, not this user's personal content. `mmm import`, `mmm init`'s seeding step, and
 `mmm doctor`'s checks all point back here rather than each carrying their own copy.
 
-*Draft — flagged for review once the rest of Phase 3 (the hooks, `mmm import`) has actually been
-used a few times, in case real usage surfaces something this list missed.*
-
 ## Page format
 - Bite-sized: ~150 lines, one topic per page.
 - YAML frontmatter: `title`, `category`, `tags`, `updated` at minimum.

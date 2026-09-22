@@ -9,7 +9,16 @@ MMM_BIN="$(cd "$(dirname "$MMM_SELF")" && pwd)"
 REGISTRY="$MMM_HOME/registry.json"
 
 die() { echo "mmm: $*" >&2; exit 1; }
-need() { command -v "$1" >/dev/null 2>&1 || die "requires '$1' on PATH"; }
+
+# command -> Homebrew formula, only where they diverge from the command name itself (rg ships
+# in "ripgrep"; the "7z" binary ships in "p7zip", not the newer "sevenzip" formula's "7zz";
+# claude is a cask, not a formula)
+declare -A DEP_FORMULA=([rg]=ripgrep [7z]=p7zip [claude]="--cask claude-code")
+need() {
+  command -v "$1" >/dev/null 2>&1 && return 0
+  local formula="${DEP_FORMULA[$1]:-$1}"
+  die "requires '$1' on PATH — install it with: brew install $formula"
+}
 need jq; need git; need rsync; need python3; need rg
 
 # self-heals on a fresh machine — nothing else bootstraps ~/.mmm before the first real command
@@ -21,6 +30,10 @@ fi
 
 realpath_of() { python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$1"; }
 expand_tilde() { printf '%s' "${1/#\~/$HOME}"; }
+
+# mktemp/EnterWorktree-style checkouts live here — never worth a permanent registry entry
+TMPROOT="$(realpath_of "${TMPDIR:-/tmp}")"
+is_under_tmp() { case "$(realpath_of "$1")" in "$TMPROOT"/*) return 0 ;; *) return 1 ;; esac; }
 
 # .git/info/exclude lives in the shared common dir, not per-worktree — `$root/.git` is a plain
 # FILE (a `gitdir: ...` pointer), not a directory, inside a `git worktree add` checkout.
@@ -64,6 +77,11 @@ resolve_path() {
 }
 
 # --- status --------------------------------------------------------------
+# STATUS_ISSUES counts DANGLING/UNEXPECTED links across a cmd_status run -- 'mmm status' itself
+# stays a plain report (no exit-code change), but cmd_doctor reads this after calling cmd_status
+# so a broken store fails doctor instead of printing a warning and shipping anyway.
+STATUS_ISSUES=0
+
 status_one() {
   local key="$1" wiki="$2" store="$3"
   if [ -L "$wiki" ]; then
@@ -72,9 +90,11 @@ status_one() {
         echo "  $key: linked ✓  ($wiki -> $store)"
       else
         echo "  $key: linked to UNEXPECTED target ($wiki -> $(readlink "$wiki"))"
+        STATUS_ISSUES=$((STATUS_ISSUES + 1))
       fi
     else
       echo "  $key: DANGLING symlink ($wiki -> $(readlink "$wiki") — target missing)"
+      STATUS_ISSUES=$((STATUS_ISSUES + 1))
     fi
   elif [ -d "$wiki" ]; then
     echo "  $key: not yet initialized (real directory at $wiki)"
@@ -83,7 +103,19 @@ status_one() {
   fi
 }
 
+cmd_forget() {
+  local key="$1"
+  jq -e --arg k "$key" '.projects[$k]' "$REGISTRY" >/dev/null 2>&1 || die "no such registered project: $key"
+  local tmp; tmp=$(mktemp)
+  jq --arg k "$key" 'del(.projects[$k])' "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+  echo "mmm: forgot '$key' from the registry"
+  if [ -d "$MMM_HOME/projects/$key" ]; then
+    echo "mmm: NOTE — $MMM_HOME/projects/$key still has its data; delete it yourself if you don't want it"
+  fi
+}
+
 cmd_status() {
+  STATUS_ISSUES=0
   echo "global:"
   status_one "global" "$HOME/.omc/wiki" "$MMM_HOME/global"
   echo "projects:"
@@ -99,12 +131,13 @@ cmd_status() {
 
 # --- init ------------------------------------------------------------------
 seed_index() {
-  local proj_root="$1" store="$2" idx="$2/index.md" found=()
+  local proj_root="$1" store="$2" do_scan="$3" idx="$2/index.md" found=()
   local f
+  [ -f "$idx" ] || { printf '# Wiki Index\n\n' > "$idx"; }
+  [ "$do_scan" = 1 ] || return 0
   for f in README.md README.rst CLAUDE.md AGENTS.md; do
     [ -f "$proj_root/$f" ] && found+=("$f")
   done
-  [ -f "$idx" ] || { printf '# Wiki Index\n\n' > "$idx"; }
   if [ "${#found[@]}" -gt 0 ] && ! grep -q '^## Existing project docs' "$idx" 2>/dev/null; then
     {
       printf '\n## Existing project docs\n\n'
@@ -116,7 +149,12 @@ seed_index() {
 ensure_claude_md() {
   local root="$1"
   [ -f "$root/CLAUDE.md" ] && return 0
-  need claude  # a prerequisite for init, same as import/ask — not optional
+  # unlike import/ask (whose whole job is talking to claude), init's /init seed is a bonus, not
+  # its purpose -- a Cursor-only machine with no 'claude' CLI must still be able to init a project
+  if ! command -v claude >/dev/null 2>&1; then
+    echo "mmm: no CLAUDE.md in $root and no 'claude' CLI on PATH — skipping the /init seed (fine for a Cursor-only setup); add one yourself anytime"
+    return 0
+  fi
   echo "mmm: no CLAUDE.md in $root — running claude /init (non-interactive)"
   ( cd "$root" && claude -p "/init" )
 }
@@ -153,8 +191,8 @@ yourself, then re-run with 'mmm init $root --merge' if that's really what you wa
   fi
   mkdir -p "$(dirname "$wiki")"
   ln -s "$store" "$wiki"
-  if [ "$first_time" = 1 ] && [ "$seed" = 1 ]; then
-    seed_index "$root" "$store"
+  if [ "$first_time" = 1 ]; then
+    seed_index "$root" "$store" "$seed"
   fi
   echo "mmm: initialized $key -> $store (linked at $wiki)"
 }
@@ -171,6 +209,7 @@ cmd_init() {
   origin=$(git -C "$path" remote get-url origin 2>/dev/null) || die "not a git repo with an origin remote: $path"
   key=$(jq -r --arg r "$origin" '.projects | to_entries[] | select(.value.remote==$r) | .key' "$REGISTRY" | head -1)
   if [ -z "$key" ]; then
+    is_under_tmp "$path" && die "refusing to register '$path' as a new project — it's under the OS tmp dir ($TMPROOT), which looks like an ephemeral worktree/clone, not a permanent checkout. If it really is permanent, move it out of tmp first."
     key=$(basename "$path")
     echo "mmm: registering new project '$key' (remote $origin)"
     local tmp; tmp=$(mktemp)
@@ -207,6 +246,7 @@ cmd_doctor() {
   done
   echo "-- symlink health --"
   cmd_status
+  [ "$STATUS_ISSUES" -gt 0 ] && fail=1
   echo "-- links / index / size --"
   python3 "$MMM_BIN/mmm-doctor.py" "$MMM_HOME" || fail=1
   echo "-- claude/ subset plugins --"
@@ -238,9 +278,16 @@ cmd_pack() {
   echo "mmm: running doctor before packing..."
   cmd_doctor  # full battery, not just secrets — its own "ISSUES FOUND" exits 1 and stops pack here
   [ -n "$out" ] || out="mmm-$(date +%Y%m%d).7z"
-  local args=(registry.json)  # bin/ lives in ~/mmm (the tool), not ~/.mmm (the data) — reinstall the tool separately
+  # bin/ lives in ~/mmm (the tool), not ~/.mmm (the data) — reinstall the tool separately
+  local args=()
   [ "$no_global" = 1 ] || args+=(global)
   [ -d "$MMM_HOME/claude" ] && args+=(claude)
+
+  # a --project archive that still shipped the FULL registry would leak every other project's
+  # remote URL and local path -- defeating the point of restricting the archive at all. Build a
+  # filtered copy in its own temp dir and add it as a single standalone file (named exactly
+  # "registry.json", so it lands at the path unpack expects); the real file is never touched.
+  local registry_src="$REGISTRY" registry_tmpdir=""
   if [ -n "$projects" ]; then
     IFS=',' read -ra keys <<< "$projects"
     local key
@@ -248,10 +295,22 @@ cmd_pack() {
       [ -d "$MMM_HOME/projects/$key" ] || die "unknown/absent project: $key"
       args+=("projects/$key")
     done
+    registry_tmpdir=$(mktemp -d)
+    local keys_json
+    keys_json=$(printf '%s\n' "${keys[@]}" | jq -R . | jq -s .)
+    jq --argjson keys "$keys_json" \
+      '.projects |= with_entries(select(.key as $k | $keys | index($k) != null))' \
+      "$REGISTRY" > "$registry_tmpdir/registry.json"
+    registry_src="$registry_tmpdir/registry.json"
   else
     [ -d "$MMM_HOME/projects" ] && args+=(projects)
   fi
-  ( cd "$MMM_HOME" && 7z a -mx=9 -mhe=on -mem=AES256 -p "$out" "${args[@]}" )
+
+  # -mhe=on alone is sufficient: .7z format already uses AES-256 whenever -p sets a password,
+  # and -mhe additionally encrypts the header (filenames included). -mem=AES256 is not a
+  # recognized switch on this p7zip build and made every `mmm pack` fail with E_INVALIDARG.
+  ( cd "$MMM_HOME" && 7z a -mx=9 -mhe=on -p "$out" "$registry_src" "${args[@]}" )
+  [ -n "$registry_tmpdir" ] && rm -rf "$registry_tmpdir"
   echo "mmm: wrote $out"
 }
 
@@ -321,10 +380,11 @@ usage:
                                       (a worktree/second clone of an already-initialized remote
                                        shares that project's wiki; --merge only if it grew its own)
   mmm doctor                         full health check (links, index, secrets, git-ignore)
+  mmm forget <key>                   drop a registered project (fixes a stale/absent entry)
   mmm pack [--project k1,k2] [--out f] [--no-global]   encrypted archive of ~/.mmm
   mmm unpack <archive> [--into dir]  extract an archive
-  mmm query "<term>" [--project k] [--global-only] [--json]   instant, no LLM
-  mmm ask "<question>"               one cheap claude -p call, scoped to query's hits
+  mmm query|q "<term>" [--project k] [--global-only] [--json]   instant, no LLM
+  mmm ask|a "<question>"             one cheap claude -p call, scoped to query's hits
   mmm import <file-or-folder>        interactive claude session: read, place, normalize into pages
 EOF
 }
@@ -342,10 +402,11 @@ case "$cmd" in
   status) cmd_status ;;
   init) [ $# -ge 1 ] || die "usage: mmm init <path>|--global [--merge]"; cmd_init "$@" ;;
   doctor) cmd_doctor ;;
+  forget) [ $# -ge 1 ] || die "usage: mmm forget <key>"; cmd_forget "$@" ;;
   pack) cmd_pack "$@" ;;
   unpack) [ $# -ge 1 ] || die "usage: mmm unpack <archive>"; cmd_unpack "$@" ;;
-  query) cmd_query "$@" ;;
-  ask) cmd_ask "$@" ;;
+  query|q) cmd_query "$@" ;;
+  ask|a) cmd_ask "$@" ;;
   import) [ $# -ge 1 ] || die "usage: mmm import <file-or-folder>"; cmd_import "$@" ;;
   -h|--help|help) usage ;;
   *) usage; die "unknown command: $cmd" ;;

@@ -8,8 +8,13 @@ set -eu
 REPO_URL="${MMM_REPO:-git@github.com:amkraev697642/mmm.git}"
 TARGET="${MMM_INSTALL_DIR:-$HOME/mmm}"
 
-for dep in jq git rsync python3 rg 7z; do
-  command -v "$dep" >/dev/null 2>&1 || echo "mmm: WARN — '$dep' not found on PATH, some commands will fail until it's installed"
+# command:brew-formula pairs -- command name and Homebrew formula name diverge for rg (ripgrep)
+# and 7z (p7zip; the "sevenzip" formula only installs a "7zz" binary, not "7z").
+MMM_DEPS="jq:jq git:git rsync:rsync python3:python3 rg:ripgrep 7z:p7zip"
+for pair in $MMM_DEPS; do
+  cmd=${pair%%:*}
+  formula=${pair##*:}
+  command -v "$cmd" >/dev/null 2>&1 || echo "mmm: WARN — '$cmd' not found on PATH — install it with: brew install $formula"
 done
 
 if [ -d "$TARGET/.git" ]; then
@@ -30,6 +35,30 @@ for f in "$TARGET"/hooks/*.mjs; do
   echo "mmm: hook -> ~/.claude/hooks/$(basename "$f")"
 done
 
+# The CLAUDE.md directive is the actual mechanism that makes an agent use mmm without being
+# asked -- the SessionStart brief alone is read-only. Append-only, idempotent via the marker.
+CLAUDE_MD="$HOME/.claude/CLAUDE.md"
+SNIPPET="$TARGET/integrations/claude-snippet.md"
+if [ -f "$CLAUDE_MD" ] && grep -q '^# >>> mmm >>>$' "$CLAUDE_MD" 2>/dev/null; then
+  echo "mmm: CLAUDE.md directive already present in $CLAUDE_MD"
+elif [ -r /dev/tty ]; then
+  printf 'mmm: add the mmm directive to %s so your agent uses it automatically? [Y/n] ' "$CLAUDE_MD"
+  ANSWER=""
+  read -r ANSWER < /dev/tty || ANSWER=""
+  case "$ANSWER" in
+    n|N|no|No)
+      echo "mmm: skipped — paste $SNIPPET into $CLAUDE_MD yourself anytime"
+      ;;
+    *)
+      [ -s "$CLAUDE_MD" ] && printf '\n' >> "$CLAUDE_MD"
+      cat "$SNIPPET" >> "$CLAUDE_MD"
+      echo "mmm: appended the mmm directive to $CLAUDE_MD"
+      ;;
+  esac
+else
+  echo "mmm: non-interactive install — paste $SNIPPET into $CLAUDE_MD yourself"
+fi
+
 SETTINGS="$HOME/.claude/settings.json"
 if command -v jq >/dev/null 2>&1 && [ -f "$SETTINGS" ]; then
   TMP=$(mktemp)
@@ -40,21 +69,6 @@ if command -v jq >/dev/null 2>&1 && [ -f "$SETTINGS" ]; then
   echo "mmm: registered hooks in $SETTINGS -- see $TARGET/hooks/README.md for what each does"
 else
   echo "mmm: WARN — jq or $SETTINGS not found, register the hooks manually (see $TARGET/hooks/README.md)"
-fi
-
-# Without this, OMC's own SessionEnd hook keeps auto-generating empty session-log stub pages
-# into the wiki forever — every one of them dead weight, never promoted, never cleaned up.
-OMC_CONFIG="$HOME/.claude/.omc-config.json"
-if command -v jq >/dev/null 2>&1; then
-  if [ -f "$OMC_CONFIG" ]; then
-    TMP=$(mktemp)
-    jq '.wiki.autoCapture = false' "$OMC_CONFIG" > "$TMP" && mv "$TMP" "$OMC_CONFIG"
-  else
-    printf '{\n  "wiki": {\n    "autoCapture": false\n  }\n}\n' > "$OMC_CONFIG"
-  fi
-  echo "mmm: disabled OMC's session-log auto-capture in $OMC_CONFIG"
-else
-  echo "mmm: WARN — jq not found, disable OMC session-log auto-capture manually: {\"wiki\":{\"autoCapture\":false}} in $OMC_CONFIG"
 fi
 
 # Cursor integration, only if Cursor is actually present on this machine.
@@ -68,6 +82,7 @@ fi
 # stylistically (bite-sized content-rules.md, the hooks). Not a dependency -- mmm works without
 # them -- purely a recommended-experience offer, and Claude Code only (Cursor has no plugin
 # marketplace equivalent). Skipped entirely if claude isn't installed or they're already enabled.
+OMC_PRESENT=0
 if command -v claude >/dev/null 2>&1; then
   ALREADY=1
   if command -v jq >/dev/null 2>&1 && [ -f "$SETTINGS" ]; then
@@ -76,6 +91,7 @@ if command -v claude >/dev/null 2>&1; then
   else
     ALREADY=0
   fi
+  OMC_PRESENT="$ALREADY"
   if [ "$ALREADY" = "0" ] && [ -r /dev/tty ]; then
     printf 'mmm: also install the oh-my-claudecode/ponytail/caveman plugins? (optional, recommended) [y/N] '
     ANSWER=""
@@ -90,6 +106,7 @@ if command -v claude >/dev/null 2>&1; then
           claude plugin marketplace add "$repo" 2>&1 || true
           if claude plugin install "$plugin" --scope user 2>&1; then
             echo "mmm: installed $plugin"
+            case "$plugin" in oh-my-claudecode@*) OMC_PRESENT=1 ;; esac
           else
             echo "mmm: WARN — failed to install $plugin, install it yourself later: claude plugin install $plugin --scope user"
           fi
@@ -99,6 +116,25 @@ if command -v claude >/dev/null 2>&1; then
         echo "mmm: skipped — install anytime with 'claude plugin install <name> --scope user' (see README)"
         ;;
     esac
+  fi
+fi
+
+# Without this, OMC's own SessionEnd hook keeps auto-generating empty session-log stub pages
+# into the wiki forever — every one of them dead weight, never promoted, never cleaned up. Only
+# relevant, and only written, when oh-my-claudecode is actually present (including one just
+# installed above) — mmm itself never reads or needs this file.
+if [ "$OMC_PRESENT" = "1" ]; then
+  OMC_CONFIG="$HOME/.claude/.omc-config.json"
+  if command -v jq >/dev/null 2>&1; then
+    if [ -f "$OMC_CONFIG" ]; then
+      TMP=$(mktemp)
+      jq '.wiki.autoCapture = false' "$OMC_CONFIG" > "$TMP" && mv "$TMP" "$OMC_CONFIG"
+    else
+      printf '{\n  "wiki": {\n    "autoCapture": false\n  }\n}\n' > "$OMC_CONFIG"
+    fi
+    echo "mmm: disabled OMC's session-log auto-capture in $OMC_CONFIG"
+  else
+    echo "mmm: WARN — jq not found, disable OMC session-log auto-capture manually: {\"wiki\":{\"autoCapture\":false}} in $OMC_CONFIG"
   fi
 fi
 
