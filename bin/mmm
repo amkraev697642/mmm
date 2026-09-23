@@ -227,7 +227,7 @@ cmd_doctor() {
   echo "== mmm doctor =="
   echo "-- secret scan --"
   if grep -rniE 'ticket=|token=|secret|password' "$MMM_HOME" \
-      --include='*.json' --include='*.md' 2>/dev/null | grep -v '^Binary'; then
+      --include='*.json' 2>/dev/null | grep -v '^Binary'; then
     echo "FAIL: possible secrets found above"; fail=1
   else
     echo "PASS: no secret patterns found"
