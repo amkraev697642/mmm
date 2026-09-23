@@ -306,10 +306,12 @@ cmd_pack() {
     [ -d "$MMM_HOME/projects" ] && args+=(projects)
   fi
 
-  # -mhe=on alone is sufficient: .7z format already uses AES-256 whenever -p sets a password,
-  # and -mhe additionally encrypts the header (filenames included). -mem=AES256 is not a
-  # recognized switch on this p7zip build and made every `mmm pack` fail with E_INVALIDARG.
-  ( cd "$MMM_HOME" && 7z a -mx=9 -mhe=on -p "$out" "$registry_src" "${args[@]}" )
+  # -mhe=on (header encryption) is 7z-format-only; 7z rejects it with E_INVALIDARG for any
+  # other archive type, so a .zip --out just drops it and relies on -p's own zip encryption.
+  # -mem=AES256 is not a recognized switch on this p7zip build and made every `mmm pack` fail.
+  local enc_args=(-p)
+  case "$out" in *.7z) enc_args+=(-mhe=on) ;; esac
+  ( cd "$MMM_HOME" && 7z a -mx=9 "${enc_args[@]}" "$out" "$registry_src" "${args[@]}" )
   [ -n "$registry_tmpdir" ] && rm -rf "$registry_tmpdir"
   echo "mmm: wrote $out"
 }
