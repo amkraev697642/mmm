@@ -44,11 +44,12 @@ git_exclude_path() {
   printf '%s/info/exclude' "$common"
 }
 
-ensure_omc_ignored() {
-  local root="$1"
-  git -C "$root" check-ignore -q .omc 2>/dev/null && return 0
-  echo '.omc' >> "$(git_exclude_path "$root")"
-  git -C "$root" check-ignore -q .omc
+# anchored to the root so a nested CLAUDE.md (e.g. a monorepo subpackage's own) stays visible
+ensure_ignored() {
+  local root="$1" path="$2"
+  git -C "$root" check-ignore -q "$path" 2>/dev/null && return 0
+  echo "/$path" >> "$(git_exclude_path "$root")"
+  git -C "$root" check-ignore -q "$path"
 }
 
 # --- registry-backed project path resolution ---------------------------------
@@ -147,8 +148,10 @@ seed_index() {
 }
 
 ensure_claude_md() {
-  local root="$1"
+  local root="$1" store="$2"
   [ -f "$root/CLAUDE.md" ] && return 0
+  # a fresh checkout of an already-adopted project has its CLAUDE.md in the store, not in the repo
+  [ -f "$store/CLAUDE.md" ] && return 0
   # unlike import/ask (whose whole job is talking to claude), init's /init seed is a bonus, not
   # its purpose -- a Cursor-only machine with no 'claude' CLI must still be able to init a project
   if ! command -v claude >/dev/null 2>&1; then
@@ -159,11 +162,49 @@ ensure_claude_md() {
   ( cd "$root" && claude -p "/init" )
 }
 
+# real file lives in the store, repo gets a git-ignored symlink; always returns 0 so one project never stops a rebalance or pack
+link_claude_md() {
+  local key="$1" root="$2" repo_copy="$2/CLAUDE.md" store_copy="$MMM_HOME/projects/$1/CLAUDE.md"
+  # a tracked file ignores exclude rules, and untracking it rewrites a shared repo -- never automatic
+  if git -C "$root" ls-files --error-unmatch CLAUDE.md >/dev/null 2>&1; then
+    echo "  $key: WARN CLAUDE.md is tracked by git — run 'git -C $root rm --cached CLAUDE.md', commit, then re-run 'mmm rebalance'"
+    return 0
+  fi
+  if [ -L "$repo_copy" ]; then
+    if [ "$(realpath_of "$repo_copy")" != "$(realpath_of "$store_copy")" ]; then
+      echo "  $key: WARN CLAUDE.md is a symlink to $(readlink "$repo_copy"), not the store — left alone"
+      return 0
+    fi
+  elif [ -f "$repo_copy" ]; then
+    if [ ! -e "$store_copy" ]; then
+      mkdir -p "$(dirname "$store_copy")"
+      mv "$repo_copy" "$store_copy"
+      echo "  $key: moved CLAUDE.md into $store_copy"
+    elif cmp -s "$repo_copy" "$store_copy"; then
+      rm "$repo_copy"
+    else
+      echo "  $key: WARN CLAUDE.md differs from $store_copy — compare them, keep one, then re-run 'mmm rebalance'"
+      return 0
+    fi
+  fi
+  if [ ! -f "$store_copy" ]; then
+    echo "  $key: no CLAUDE.md"
+    return 0
+  fi
+  # ignore before linking so the symlink is never visible as untracked, even briefly
+  if ! ensure_ignored "$root" CLAUDE.md; then
+    echo "  $key: WARN could not git-ignore CLAUDE.md in $root — left unlinked"
+    return 0
+  fi
+  ln -sfn "$store_copy" "$repo_copy"
+  echo "  $key: CLAUDE.md linked ✓"
+}
+
 init_one() {
   local key="$1" root="$2" wiki="$3" store="$4" seed="$5" force_merge="$6"
   if [ "$key" != "global" ]; then
-    ensure_omc_ignored "$root" || die "could not confirm .omc is git-ignored in $root — refusing to init"
-    [ "$seed" = 1 ] && ensure_claude_md "$root"
+    ensure_ignored "$root" .omc || die "could not confirm .omc is git-ignored in $root — refusing to init"
+    [ "$seed" = 1 ] && ensure_claude_md "$root" "$store"
   fi
   if [ -L "$wiki" ] && [ -e "$wiki" ] && [ "$(realpath_of "$wiki")" = "$(realpath_of "$store")" ]; then
     echo "mmm: $key already initialized"
@@ -219,6 +260,22 @@ cmd_init() {
     echo "mmm: '$key' already registered (remote $origin) — same project, this is another checkout/worktree of it, sharing its wiki"
   fi
   init_one "$key" "$path" "$path/.omc/wiki" "$MMM_HOME/projects/$key" 1 "$force_merge"
+  # after init_one, not inside it: init_one's first_time/--merge logic keys off the store dir not existing yet
+  link_claude_md "$key" "$path"
+}
+
+# --- rebalance ---------------------------------------------------------------
+# the same move-into-store adoption `init` does, re-runnable across every registered project
+cmd_rebalance() {
+  echo "-- rebalance --"
+  local k path
+  for k in $(jq -r '.projects | keys[]' "$REGISTRY"); do
+    if path=$(resolve_path "$k"); then
+      link_claude_md "$k" "$path"
+    else
+      echo "  $k: absent on this machine (registered, not found)"
+    fi
+  done
 }
 
 # --- doctor ------------------------------------------------------------------
@@ -240,7 +297,7 @@ cmd_doctor() {
         echo "PASS: $k .omc is ignored"
       else
         echo "REPAIR: $k .omc not ignored, adding to $(git_exclude_path "$path")"
-        if ensure_omc_ignored "$path"; then echo "PASS: $k now ignored"; else echo "FAIL: $k still not ignored"; fail=1; fi
+        if ensure_ignored "$path" .omc; then echo "PASS: $k now ignored"; else echo "FAIL: $k still not ignored"; fail=1; fi
       fi
     fi
   done
@@ -275,6 +332,7 @@ cmd_pack() {
       *) die "unknown pack option: $1" ;;
     esac
   done
+  cmd_rebalance  # before doctor, so a CLAUDE.md that slipped back into a repo is in the store when it is archived
   echo "mmm: running doctor before packing..."
   cmd_doctor  # full battery, not just secrets — its own "ISSUES FOUND" exits 1 and stops pack here
   [ -n "$out" ] || out="mmm-$(date +%Y%m%d).7z"
@@ -382,6 +440,8 @@ usage:
                                       (a worktree/second clone of an already-initialized remote
                                        shares that project's wiki; --merge only if it grew its own)
   mmm doctor                         full health check (links, index, secrets, git-ignore)
+  mmm rebalance                      move each project's CLAUDE.md into the store, leave a git-ignored
+                                      symlink (runs automatically before pack)
   mmm forget <key>                   drop a registered project (fixes a stale/absent entry)
   mmm pack [--project k1,k2] [--out f] [--no-global]   encrypted archive of ~/.mmm
   mmm unpack <archive> [--into dir]  extract an archive
@@ -404,6 +464,7 @@ case "$cmd" in
   status) cmd_status ;;
   init) [ $# -ge 1 ] || die "usage: mmm init <path>|--global [--merge]"; cmd_init "$@" ;;
   doctor) cmd_doctor ;;
+  rebalance) cmd_rebalance ;;
   forget) [ $# -ge 1 ] || die "usage: mmm forget <key>"; cmd_forget "$@" ;;
   pack) cmd_pack "$@" ;;
   unpack) [ $# -ge 1 ] || die "usage: mmm unpack <archive>"; cmd_unpack "$@" ;;

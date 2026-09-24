@@ -28,6 +28,7 @@ no data in it. **`~/.mmm`** (dotted) is your actual content — `mmm pack` only 
 ```
 mmm unpack mmm-2026-09.7z   # got handed one? extract it (password prompt)
 mmm init .                  # link this project into the store (repeat per project)
+mmm rebalance               # keep every project's CLAUDE.md in the store, not its repo (pack runs it)
 mmm q "some term"           # instant, free, no model call
 mmm a "a real question"     # one cheap model call, scoped only to query's hits
 ```

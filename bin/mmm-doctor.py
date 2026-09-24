@@ -13,6 +13,8 @@ LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+\.md)\)")
 # environment.md is OMC's own reserved/auto-generated file — excluded from its index by design
 SKIP_NAMES = {"index.md", "log.md", "README.md", "environment.md"}
+# a project's CLAUDE.md lives in the store but is the repo's file, not a wiki page -- its relative links resolve against the repo
+NOT_PAGES = {"CLAUDE.md"}
 PAGE_BUDGET = 150
 # plans/: design-doc prose that may illustrate [[link]] syntax without meaning a real link, and
 # is explicitly not bite-sized by design. deep-research/: allowed to be long, but its [[links]]
@@ -44,6 +46,8 @@ def main() -> int:
         if not tier_dir.is_dir():
             continue
         for f in tier_dir.rglob("*.md"):
+            if f.name in NOT_PAGES:
+                continue
             slug_to_path[f.stem] = f
             all_pages.append((tier_name, f))
 
@@ -98,7 +102,7 @@ def main() -> int:
         idx = tier_dir / "index.md"
         idx_text = idx.read_text(errors="replace") if idx.is_file() else ""
         for f in tier_dir.glob("*.md"):
-            if f.name in SKIP_NAMES:
+            if f.name in SKIP_NAMES or f.name in NOT_PAGES:
                 continue
             if f.stem not in idx_text:
                 unindexed.append(f)
