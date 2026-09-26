@@ -336,6 +336,9 @@ cmd_pack() {
   echo "mmm: running doctor before packing..."
   cmd_doctor  # full battery, not just secrets — its own "ISSUES FOUND" exits 1 and stops pack here
   [ -n "$out" ] || out="mmm-$(date +%Y%m%d).7z"
+  # 7z runs from inside $MMM_HOME below, so a relative --out would land in the store itself
+  # (and get swept into the next pack) instead of where the user ran the command
+  case "$out" in /*) ;; *) out="$PWD/$out" ;; esac
   # bin/ lives in ~/mmm (the tool), not ~/.mmm (the data) — reinstall the tool separately
   local args=()
   [ "$no_global" = 1 ] || args+=(global)
@@ -368,7 +371,7 @@ cmd_pack() {
   # other archive type, so a .zip --out just drops it and relies on -p's own zip encryption.
   # -mem=AES256 is not a recognized switch on this p7zip build and made every `mmm pack` fail.
   local enc_args=(-p)
-  case "$out" in *.7z) enc_args+=(-mhe=on) ;; esac
+  case "$out" in *.7z|*.7Z) enc_args+=(-mhe=on) ;; esac
   ( cd "$MMM_HOME" && 7z a -mx=9 "${enc_args[@]}" "$out" "$registry_src" "${args[@]}" )
   [ -n "$registry_tmpdir" ] && rm -rf "$registry_tmpdir"
   echo "mmm: wrote $out"
