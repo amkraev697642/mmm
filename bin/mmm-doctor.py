@@ -85,7 +85,7 @@ def frontmatter(text: str):
             continue
         key, val = kv.group(1), kv.group(2).strip()
         if val.startswith("[") and val.endswith("]"):
-            fields[key] = [v.strip(" \"'") for v in val[1:-1].split(",") if v.strip()]
+            fields[key] = [v.strip(" \"'") for v in re.split(r",(?![^{]*})", val[1:-1]) if v.strip()]
         else:
             fields[key] = val.strip("\"'")
     return fields

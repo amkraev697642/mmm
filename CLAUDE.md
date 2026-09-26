@@ -34,6 +34,8 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
   See `hooks/README.md` for the manual-registration JSON if `install.sh` can't merge safely.
   - `wiki-brief.mjs` (`SessionStart`) — ≤10-line session brief: page count, current project's
     open tasks, pointer to the relevant `index.md`.
+  - `wiki-recall.mjs` (`PostToolUse`, matcher `Read|Edit|Write|MultiEdit`) — one-line pointer
+    to a page whose `applies_to:` globs or `sources:` match the touched file, once per session.
   - `plan-tax-mark.mjs` (`PostToolUse`, matcher `ExitPlanMode`) — marks that a plan-mode task
     just got approved (knowledge debt).
   - `plan-tax-collect.mjs` (`Stop`) — nags once if nothing under `~/.mmm` changed since the

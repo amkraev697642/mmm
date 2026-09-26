@@ -11,6 +11,9 @@ generic rules, not this user's personal content. `mmm import`, `mmm init`'s seed
 - Optional, project pages: `sources:` — the repo files (relative to the repo root, `path:line`
   allowed) the page's claims come from. `mmm doctor` warns once a cited file is deleted or has
   commits newer than `updated`; re-read the code, then fix the page or just bump `updated`.
+- Optional: `applies_to:` — globs relative to a repo root (`["src/billing/**", "*.sql"]`). The
+  recall hook points the agent at the page when it touches a matching file (files in `sources:`
+  count too). Use it for pages that should be read *before* editing that code.
 - Optional: `superseded_by: "[[newer-slug]]"` when a page is kept for history but no longer
   true. Prefer updating the page in place; this is for decisions that were reversed.
 - Cross-link with `[[slug]]` (resolves by bare filename stem, globally unique across the whole
