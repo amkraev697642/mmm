@@ -6,7 +6,10 @@ generic rules, not this user's personal content. `mmm import`, `mmm init`'s seed
 
 ## Page format
 - Bite-sized: ~150 lines, one topic per page.
-- YAML frontmatter: `title`, `category`, `tags`, `updated` at minimum.
+- YAML frontmatter: `title`, `category`, `tags`, `updated` at minimum (`updated` as
+  `YYYY-MM-DD`, bumped whenever the page's facts change, since doctor dates pages by it).
+- Optional: `superseded_by: "[[newer-slug]]"` when a page is kept for history but no longer
+  true. Prefer updating the page in place; this is for decisions that were reversed.
 - Cross-link with `[[slug]]` (resolves by bare filename stem, globally unique across the whole
   tree — don't use `[[index]]`, every tier has one and it can't disambiguate; link to `index.md`
   files with a real `[text](path/to/index.md)` link instead).

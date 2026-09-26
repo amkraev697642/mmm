@@ -7,8 +7,11 @@ read-only reporting. `mmm pack` runs it first and refuses to produce an archive 
 
 | Does | Does **not** |
 |---|---|
-| `[[slug]]` links resolve tree-wide; `[text](file.md)` targets exist | Validate frontmatter (`title`/`category`/`tags`/`updated`) — required by [content-rules.md](../content-rules.md), never checked |
-| Page budget (150 lines), exempting `plans/` and `deep-research/` | Judge content: staleness, duplication, contradictions, factual accuracy |
+| `[[slug]]` links resolve tree-wide; `[text](file.md)` targets exist | Judge whether a page's content is *right* — only whether it's dated, sourced and current by the rules below |
+| Frontmatter has `title`/`category`/`tags`/`updated` (`WARN`, not a failure) | Validate frontmatter values beyond presence and the `updated` date |
+| Pages whose `updated` is older than `MMM_STALE_DAYS` (default 180) — `WARN` | Decide a page is wrong just because it's old |
+| Links into a page marked `superseded_by` — `WARN` | Rewrite those links for you |
+| Page budget (150 lines), exempting `plans/` and `deep-research/` | Judge content: duplication, contradictions, factual accuracy (that's `mmm tidy`) |
 | `.omc` is git-ignored per registered project — **auto-repairs** via `.git/info/exclude` | Touch project git in any other way |
 | Symlink health per project (linked / dangling / unexpected target / not-yet-initialized) — **dangling or unexpected now fails doctor**, not just prints a note | Verify the archive itself, its encryption, or a real round-trip |
 | Greps `*.json` for the keywords `ticket=`, `token=`, `secret`, `password`, and `*.md`/`*.json` for credential *shapes*: AWS/GitHub/GitLab/Google/Slack/Anthropic/OpenAI key prefixes, PEM private-key headers, JWTs | **Detect every secret.** No entropy check, so a bare random string with no known prefix still slips through |
