@@ -20,18 +20,23 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
   each subcommand is a `cmd_*` function. Holds the project registry (`~/.mmm/registry.json`,
   keyed by git remote URL, not path — path is just a cached hint) and all symlink-adoption
   logic (`init_one`), plus `link_claude_md` (`init` and `rebalance`): a project's `CLAUDE.md`
-  lives in the store, the repo gets a git-ignored symlink. Requires `jq`, `git`, `rsync`, `python3`, `rg` on `PATH`.
-- **`bin/mmm-query.py`** / **`bin/mmm-doctor.py`** — stdlib-only Python 3 (no pip installs).
+  lives in the store, the repo gets a git-ignored symlink; and `link_auto_memory` (same two
+  commands): Claude Code's machine-local auto memory dir moves to `projects/<key>/memory`, a
+  symlink left in its place. Requires `jq`, `git`, `rsync`, `python3`, `rg` on `PATH`.
+- **`bin/mmm-query.py`** / **`bin/mmm-doctor.py`** / **`bin/mmm-links.py`** — stdlib-only Python 3 (no pip installs).
   `mmm-query.py` is `rg --json` with wiki-structure awareness (frontmatter hits ranked over
   body hits, results grouped by page). `mmm-doctor.py` does structural checks: broken
   `[[wikilink]]`s (checked tree-wide, since pages cross-link between tiers), dangling
-  `[text](file.md)` links, oversized pages (150-line budget), unindexed pages.
+  `[text](file.md)` links, oversized pages (150-line budget), unindexed pages, plus `WARN`-only
+  frontmatter/age/`superseded_by`/`sources:` checks. `mmm-links.py` is backlinks and orphans.
 - **`hooks/*.mjs`** — Claude Code hooks, plain Node ESM, no dependencies, speaking Claude
   Code's hook JSON contract (stdin JSON in, `{continue: true, ...}` JSON out on stdout).
   Symlinked by `install.sh` into `~/.claude/hooks/` and registered in `~/.claude/settings.json`.
   See `hooks/README.md` for the manual-registration JSON if `install.sh` can't merge safely.
   - `wiki-brief.mjs` (`SessionStart`) — ≤10-line session brief: page count, current project's
     open tasks, pointer to the relevant `index.md`.
+  - `wiki-recall.mjs` (`PostToolUse`, matcher `Read|Edit|Write|MultiEdit`) — one-line pointer
+    to a page whose `applies_to:` globs or `sources:` match the touched file, once per session.
   - `plan-tax-mark.mjs` (`PostToolUse`, matcher `ExitPlanMode`) — marks that a plan-mode task
     just got approved (knowledge debt).
   - `plan-tax-collect.mjs` (`Stop`) — nags once if nothing under `~/.mmm` changed since the
@@ -41,6 +46,9 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
   symlinks hooks, merges hook registration into `~/.claude/settings.json` via `jq`, offers
   optional companion plugin installs (oh-my-claudecode/ponytail/caveman), adds `bin/` to `PATH`.
   Idempotent — same command installs and updates.
+- **`integrations/mcp-server.mjs`** — dependency-free stdio MCP server (hand-rolled JSON-RPC,
+  no SDK): `mmm_query`/`mmm_list`/`mmm_read`/`mmm_write`, paths confined to `~/.mmm`. For MCP
+  clients without file access to the store; `install.sh` registers it for Cursor.
 - **`integrations/bootstrap.mdc`** — Cursor rule (symlinked to `~/.cursor/rules/`) giving
   Cursor the same wiki-routing awareness Claude Code gets from `CLAUDE.md` + hooks, since
   Cursor has no MCP access to the wiki paths.
@@ -53,6 +61,9 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
 
 - **Two roots, deliberately**: `~/mmm` (tool, no data) vs `~/.mmm` (data, private). `mmm pack`
   only ever archives `~/.mmm`.
+- **`~/.mmm` is a local git repo** (`snapshot()` in `bin/mmm`, `snapshot()` in
+  `wiki-brief.mjs`): committed at session start and before pack/unpack, never pushed. `.git` is
+  not archived by pack and is skipped by every tree walk (plan-tax "paid" check, page count).
 - **Registry keyed by git remote**, not filesystem path — `resolve_path()` in `bin/mmm` walks
   `searchRoots` to relocate a project if its cached `pathHint` no longer matches. A second
   worktree/clone of an already-registered remote shares that project's wiki (one project, one
@@ -64,7 +75,7 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
 - **`mmm ask`** reduces the natural-language question to an `rg` alternation pattern
   (stopword-filtered) before calling `mmm-query.py --json`, then pipes those excerpts into one
   scoped `claude -p` call — never a raw semantic search.
-- **`mmm import`** hands off to an interactive `claude` session (not scripted) with
+- **`mmm import`** and **`mmm tidy`** hand off to an interactive `claude` session (not scripted) with
   `content-rules.md` as its instructions, since placement/normalization is a judgment call.
 
 ## Testing / verification

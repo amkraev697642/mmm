@@ -16,6 +16,8 @@ process.stdin.on('end', () => {
 
   if (!existsSync(mmmData)) { process.stdout.write(''); return; }
 
+  snapshot(mmmData);
+
   const totalPages = countMdFiles(mmmData);
   const lines = [`[mmm: ${totalPages} pages at ~/.mmm]`];
 
@@ -35,9 +37,22 @@ process.stdin.on('end', () => {
   process.stdout.write(lines.slice(0, 10).join('\n'));
 });
 
+// a restore point before this session's agent touches anything -- the same commit `mmm git log`
+// shows, so a page clobbered mid-session is one `mmm git checkout` away
+function snapshot(mmmData) {
+  if (!existsSync(join(mmmData, '.git'))) return;
+  const git = (args) => execSync(`git -C "${mmmData}" -c user.name=mmm -c user.email=mmm@localhost ${args}`,
+    { stdio: ['ignore', 'pipe', 'ignore'] });
+  try {
+    git('add -A');
+    try { git('diff --cached --quiet'); } catch { git('commit -q -m "mmm: before session"'); }
+  } catch { /* a locked index or broken repo must never block a session start */ }
+}
+
 function countMdFiles(dir) {
   let n = 0;
   for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === '.git') continue;
     const p = join(dir, e.name);
     if (e.isDirectory()) n += countMdFiles(p);
     else if (e.name.endsWith('.md')) n += 1;

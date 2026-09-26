@@ -12,6 +12,8 @@ function newerFileExists(dir, thresholdMs) {
   let entries;
   try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return false; }
   for (const e of entries) {
+    // snapshot commits touch .git on every session start -- that's not the debt being paid
+    if (e.name === '.git') continue;
     const p = join(dir, e.name);
     if (e.isDirectory()) {
       if (newerFileExists(p, thresholdMs)) return true;

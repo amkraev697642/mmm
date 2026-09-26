@@ -18,12 +18,12 @@ exactly as before.
 
 | Scope | Path | Tool (Claude Code) | Tool (Cursor) |
 |-------|------|---------------------|----------------|
-| Cross-project | `~/.omc/wiki/` | `global-wiki` skill — Read/Write/Grep | Plain file read/write — no MCP access here either |
-| Project-local | `<repo>/.omc/wiki/` | OMC `wiki_*` MCP (oh-my-claudecode only — not part of mmm) | Plain file read/write — Cursor has no MCP access |
+| Cross-project | `~/.omc/wiki/` | `global-wiki` skill — Read/Write/Grep | `mmm_query`/`mmm_read`/`mmm_write` MCP tools, else plain file read/write |
+| Project-local | `<repo>/.omc/wiki/` | OMC `wiki_*` MCP (oh-my-claudecode only — not part of mmm) | Same `mmm_*` MCP tools (paths under `projects/<key>/`), else plain file read/write |
 
 `wiki_*` MCP is an **oh-my-claudecode** feature, sandboxed to the worktree, and Cursor doesn't
-have it at all — in Cursor, always fall back to reading/editing `.omc/wiki/*.md` as plain
-files, same as the global tier already requires for both editors. Without OMC installed,
+have it at all. In Cursor use mmm's own `mmm_*` MCP tools when they're listed, otherwise read and
+edit `.omc/wiki/*.md` as plain files. Without OMC installed,
 Claude Code falls back the same way.
 
 `mmm` (on `PATH` once installed) is a plain shell tool, not editor-specific — `mmm query "<term>"`

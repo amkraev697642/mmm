@@ -94,4 +94,30 @@ nodeps q zebracorn --json | python3 -c 'import json,sys; json.load(sys.stdin)' \
   || fail "q --json is not valid JSON"
 ok "q --json emits valid JSON"
 
+# built by concatenation so this file never itself looks like a leaked token
+printf 'leaked %s\n' "ghp_$(printf 'a%.0s' $(seq 36))" >> "$global/smoke-page.md"
+if nodeps doctor >"$T/doctor.out"; then fail "doctor missed a credential-shaped string in a page"; fi
+grep -q "credential-shaped" "$T/doctor.out" || fail "doctor failed without naming the secret scan"
+ok "doctor fails on a credential-shaped string in a .md page"
+sed -i.bak '/^leaked /d' "$global/smoke-page.md" && rm -f "$global/smoke-page.md.bak"
+
+nodeps git log --oneline >"$T/git.out" || fail "~/.mmm is not a git repo"
+grep -q "mmm: start history" "$T/git.out" || fail "no initial snapshot in ~/.mmm history"
+ok "~/.mmm keeps its own git history"
+
+printf -- '---\ntitle: Linker\ncategory: test\ntags: [smoke]\nupdated: 2026-01-01\n---\nsee [[smoke-page]]\n' \
+  > "$global/linker.md"
+nodeps links smoke-page >"$T/links.out" || fail "links exited non-zero"
+grep -q "global/linker.md" "$T/links.out" || fail "links missed a backlink: $(cat "$T/links.out")"
+ok "links lists backlinks"
+
+if command -v node >/dev/null 2>&1; then
+  printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mmm_read","arguments":{"path":"global/linker.md"}}}' \
+    '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"mmm_read","arguments":{"path":"../escape.md"}}}' \
+    | node "$(dirname "$MMM")/../integrations/mcp-server.mjs" >"$T/mcp.out"
+  grep '"id":1' "$T/mcp.out" | grep -q "Linker" || fail "MCP mmm_read did not return the page"
+  grep '"id":2' "$T/mcp.out" | grep -q "escapes" || fail "MCP server let a path escape ~/.mmm"
+  ok "MCP server reads pages and refuses paths outside ~/.mmm"
+fi
+
 echo "smoke: all $pass checks passed"
