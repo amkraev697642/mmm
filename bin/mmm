@@ -32,6 +32,21 @@ if [ ! -f "$REGISTRY" ]; then
   echo "mmm: first run — created $REGISTRY (empty; add your own dirs to searchRoots if you want auto-rediscovery)"
 fi
 
+# ~/.mmm is its own local git repo (never pushed anywhere): history and undo for pages an agent
+# rewrote, and a restore point before unpack lays an archive over the store. Fixed identity so
+# a machine with no git user configured still commits.
+store_git() { git -C "$MMM_HOME" -c user.name=mmm -c user.email=mmm@localhost "$@"; }
+snapshot() {
+  [ -d "$MMM_HOME/.git" ] || return 0
+  store_git add -A
+  store_git diff --cached --quiet || store_git commit -q -m "$1"
+}
+if [ ! -d "$MMM_HOME/.git" ]; then
+  git init -q "$MMM_HOME"
+  snapshot "mmm: start history"
+  echo "mmm: $MMM_HOME is now a local git repo (history only, no remote) — see 'mmm git log'"
+fi
+
 realpath_of() { python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$1"; }
 expand_tilde() { printf '%s' "${1/#\~/$HOME}"; }
 
@@ -387,6 +402,7 @@ cmd_pack() {
       *) die "unknown pack option: $1" ;;
     esac
   done
+  snapshot "mmm: before pack"
   cmd_rebalance  # before doctor, so a CLAUDE.md that slipped back into a repo is in the store when it is archived
   echo "mmm: running doctor before packing..."
   cmd_doctor  # full battery, not just secrets — its own "ISSUES FOUND" exits 1 and stops pack here
@@ -437,8 +453,13 @@ cmd_unpack() {
     case "$1" in --into) into="$2"; shift 2 ;; *) die "unknown unpack option: $1" ;; esac
   done
   mkdir -p "$into"
+  [ "$into" = "$MMM_HOME" ] && snapshot "mmm: before unpack $(basename "$archive")"
   7z x "$archive" -o"$into"
   echo "mmm: unpacked into $into — now run 'mmm init <path>' for each project present on this machine"
+  if [ "$into" = "$MMM_HOME" ] && [ -n "$(store_git status --porcelain)" ]; then
+    echo "mmm: the archive changed these files (review with 'mmm git diff', undo one with 'mmm git checkout -- <file>'):"
+    store_git status --short
+  fi
 }
 
 # --- query / ask ---------------------------------------------------------
@@ -503,6 +524,8 @@ usage:
   mmm query|q "<term>" [--project k] [--global-only] [--json]   instant, no LLM
   mmm ask|a "<question>"             one cheap claude -p call, scoped to query's hits
   mmm import <file-or-folder>        interactive claude session: read, place, normalize into pages
+  mmm git <args>                     git inside ~/.mmm (log, diff, checkout) — snapshotted at every
+                                      session start, before pack and before unpack
 EOF
 }
 
@@ -526,6 +549,7 @@ case "$cmd" in
   query|q) cmd_query "$@" ;;
   ask|a) cmd_ask "$@" ;;
   import) [ $# -ge 1 ] || die "usage: mmm import <file-or-folder>"; cmd_import "$@" ;;
+  git) store_git "$@" ;;
   -h|--help|help) usage ;;
   *) usage; die "unknown command: $cmd" ;;
 esac

@@ -31,12 +31,16 @@ mmm init .                  # link this project into the store (repeat per proje
 mmm rebalance               # keep every project's CLAUDE.md and auto memory in the store (pack runs it)
 mmm q "some term"           # instant, free, no model call
 mmm a "a real question"     # one cheap model call, scoped only to query's hits
+mmm git log --stat          # ~/.mmm is a local git repo: history, diff, undo
 ```
 
 What's actually automatic vs. what you (or your agent) still have to do:
 
 - **Automatic:** a `SessionStart` hook briefs your agent with open tasks and a pointer to
   `index.md`, before anyone's typed anything.
+- **Automatic:** `~/.mmm` is snapshotted into its own local git repo (no remote) at every
+  session start and before `pack`/`unpack`, so a page an agent clobbered is one
+  `mmm git checkout -- <file>` away.
 - **Prompted, not enforced:** finish a plan-mode task and a `Stop` hook reminds the agent,
   once, to file what it learned — a nudge it can ignore, not a quota.
 - **Automatic:** Claude Code's own auto memory (`~/.claude/projects/<dir>/memory`, normally

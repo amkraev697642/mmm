@@ -55,6 +55,9 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
 
 - **Two roots, deliberately**: `~/mmm` (tool, no data) vs `~/.mmm` (data, private). `mmm pack`
   only ever archives `~/.mmm`.
+- **`~/.mmm` is a local git repo** (`snapshot()` in `bin/mmm`, `snapshot()` in
+  `wiki-brief.mjs`): committed at session start and before pack/unpack, never pushed. `.git` is
+  not archived by pack and is skipped by every tree walk (plan-tax "paid" check, page count).
 - **Registry keyed by git remote**, not filesystem path — `resolve_path()` in `bin/mmm` walks
   `searchRoots` to relocate a project if its cached `pathHint` no longer matches. A second
   worktree/clone of an already-registered remote shares that project's wiki (one project, one
