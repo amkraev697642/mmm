@@ -19,7 +19,7 @@ MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+\.md)\)")
 # environment.md is OMC's own reserved/auto-generated file — excluded from its index by design
 SKIP_NAMES = {"index.md", "log.md", "README.md", "environment.md"}
 # a project's CLAUDE.md lives in the store but is the repo's file, not a wiki page -- its relative links resolve against the repo
-NOT_PAGES = {"CLAUDE.md"}
+NOT_PAGES = {"CLAUDE.md", "AGENTS.md"}
 PAGE_BUDGET = 150
 # plans/: design-doc prose that may illustrate [[link]] syntax without meaning a real link, and
 # is explicitly not bite-sized by design. deep-research/: allowed to be long, but its [[links]]

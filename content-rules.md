@@ -46,6 +46,8 @@ project's own wiki (`~/.mmm/projects/<key>`). `tasks.md` is always project-local
 even though it needs to travel with `mmm pack` like everything else. Likewise a project's
 `CLAUDE.md`: the real file lives at `projects/<key>/CLAUDE.md` and the repo only gets a
 git-ignored symlink (`mmm rebalance` maintains it), so it is never committed to the work repo.
+An untracked `AGENTS.md` (the file Codex, Copilot and Cursor read) is handled the same way; a
+committed one is the team's file and stays in the repo.
 
 ## `tasks.md`
 One per project, named exactly `tasks.md` (not `<project>-tasks.md` — a real inconsistency this

@@ -181,42 +181,45 @@ ensure_claude_md() {
   ( cd "$root" && claude -p "/init" )
 }
 
-# real file lives in the store, repo gets a git-ignored symlink; always returns 0 so one project never stops a rebalance or pack
+# real file lives in the store, repo gets a git-ignored symlink; always returns 0 so one project never stops a rebalance or pack.
+# AGENTS.md gets the same treatment when it's a personal file, but it's usually the team's shared,
+# committed instructions for Codex/Copilot/Cursor -- a tracked or absent one is simply not ours.
 link_claude_md() {
-  local key="$1" root="$2" repo_copy="$2/CLAUDE.md" store_copy="$MMM_HOME/projects/$1/CLAUDE.md"
+  local key="$1" root="$2" name="${3:-CLAUDE.md}"
+  local repo_copy="$2/$name" store_copy="$MMM_HOME/projects/$1/$name"
   # a tracked file ignores exclude rules, and untracking it rewrites a shared repo -- never automatic
-  if git -C "$root" ls-files --error-unmatch CLAUDE.md >/dev/null 2>&1; then
-    echo "  $key: WARN CLAUDE.md is tracked by git — run 'git -C $root rm --cached CLAUDE.md', commit, then re-run 'mmm rebalance'"
+  if git -C "$root" ls-files --error-unmatch "$name" >/dev/null 2>&1; then
+    [ "$name" = CLAUDE.md ] && echo "  $key: WARN CLAUDE.md is tracked by git — run 'git -C $root rm --cached CLAUDE.md', commit, then re-run 'mmm rebalance'"
     return 0
   fi
   if [ -L "$repo_copy" ]; then
     if [ "$(realpath_of "$repo_copy")" != "$(realpath_of "$store_copy")" ]; then
-      echo "  $key: WARN CLAUDE.md is a symlink to $(readlink "$repo_copy"), not the store — left alone"
+      echo "  $key: WARN $name is a symlink to $(readlink "$repo_copy"), not the store — left alone"
       return 0
     fi
   elif [ -f "$repo_copy" ]; then
     if [ ! -e "$store_copy" ]; then
       mkdir -p "$(dirname "$store_copy")"
       mv "$repo_copy" "$store_copy"
-      echo "  $key: moved CLAUDE.md into $store_copy"
+      echo "  $key: moved $name into $store_copy"
     elif cmp -s "$repo_copy" "$store_copy"; then
       rm "$repo_copy"
     else
-      echo "  $key: WARN CLAUDE.md differs from $store_copy — compare them, keep one, then re-run 'mmm rebalance'"
+      echo "  $key: WARN $name differs from $store_copy — compare them, keep one, then re-run 'mmm rebalance'"
       return 0
     fi
   fi
   if [ ! -f "$store_copy" ]; then
-    echo "  $key: no CLAUDE.md"
+    [ "$name" = CLAUDE.md ] && echo "  $key: no CLAUDE.md"
     return 0
   fi
   # ignore before linking so the symlink is never visible as untracked, even briefly
-  if ! ensure_ignored "$root" CLAUDE.md; then
-    echo "  $key: WARN could not git-ignore CLAUDE.md in $root — left unlinked"
+  if ! ensure_ignored "$root" "$name"; then
+    echo "  $key: WARN could not git-ignore $name in $root — left unlinked"
     return 0
   fi
   ln -sfn "$store_copy" "$repo_copy"
-  echo "  $key: CLAUDE.md linked ✓"
+  echo "  $key: $name linked ✓"
 }
 
 # Claude Code's auto memory is machine-local by design (~/.claude/projects/<dir>/memory); moving
@@ -323,6 +326,7 @@ cmd_init() {
   init_one "$key" "$path" "$path/.omc/wiki" "$MMM_HOME/projects/$key" 1 "$force_merge"
   # after init_one, not inside it: init_one's first_time/--merge logic keys off the store dir not existing yet
   link_claude_md "$key" "$path"
+  link_claude_md "$key" "$path" AGENTS.md
   link_auto_memory "$key" "$path"
 }
 
@@ -334,6 +338,7 @@ cmd_rebalance() {
   for k in $(jq -r '.projects | keys[]' "$REGISTRY"); do
     if path=$(resolve_path "$k"); then
       link_claude_md "$k" "$path"
+      link_claude_md "$k" "$path" AGENTS.md
       link_auto_memory "$k" "$path"
     else
       echo "  $k: absent on this machine (registered, not found)"
