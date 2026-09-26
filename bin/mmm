@@ -10,6 +10,10 @@ REGISTRY="$MMM_HOME/registry.json"
 
 die() { echo "mmm: $*" >&2; exit 1; }
 
+# AWS, GitHub, Anthropic/OpenAI, Slack, Google, GitLab keys, PEM private keys, JWTs -- formats
+# with a fixed prefix, so a match is almost never prose (unlike the keyword grep in doctor)
+SECRET_SHAPES='\bAKIA[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{36,}|\bgithub_pat_[A-Za-z0-9_]{22,}|\bsk-(ant-|proj-)?[A-Za-z0-9_-]{20,}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\bAIza[0-9A-Za-z_-]{35}|\bglpat-[A-Za-z0-9_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+
 # command -> Homebrew formula, only where they diverge from the command name itself (rg ships
 # in "ripgrep"; the "7z" binary ships in "p7zip", not the newer "sevenzip" formula's "7zz";
 # claude is a cask, not a formula)
@@ -284,10 +288,17 @@ cmd_doctor() {
   echo "== mmm doctor =="
   echo "-- secret scan --"
   if grep -rniE 'ticket=|token=|secret|password' "$MMM_HOME" \
-      --include='*.json' 2>/dev/null | grep -v '^Binary'; then
+      --include='*.json' --exclude-dir=.git 2>/dev/null | grep -v '^Binary'; then
     echo "FAIL: possible secrets found above"; fail=1
   else
-    echo "PASS: no secret patterns found"
+    echo "PASS: no secret keywords in *.json"
+  fi
+  # the keyword grep above stays off *.md because prose *about* passwords tripped it; these are
+  # the shapes real credentials take, which prose almost never does, so pages get scanned again
+  if rg -n --no-heading --hidden --glob '*.md' --glob '*.json' --glob '!.git' -e "$SECRET_SHAPES" "$MMM_HOME" 2>/dev/null; then
+    echo "FAIL: credential-shaped strings found above"; fail=1
+  else
+    echo "PASS: no credential-shaped strings in *.md/*.json"
   fi
   echo "-- git-ignore --"
   local k path

@@ -11,7 +11,7 @@ read-only reporting. `mmm pack` runs it first and refuses to produce an archive 
 | Page budget (150 lines), exempting `plans/` and `deep-research/` | Judge content: staleness, duplication, contradictions, factual accuracy |
 | `.omc` is git-ignored per registered project — **auto-repairs** via `.git/info/exclude` | Touch project git in any other way |
 | Symlink health per project (linked / dangling / unexpected target / not-yet-initialized) — **dangling or unexpected now fails doctor**, not just prints a note | Verify the archive itself, its encryption, or a real round-trip |
-| Greps `*.md`/`*.json` for the literal strings `ticket=`, `token=`, `secret`, `password` | **Detect actual secrets.** Four keywords, no entropy check, no key-format matching — false-positives on prose *about* security, and misses a bare API key, a PEM block, or a JWT |
+| Greps `*.json` for the keywords `ticket=`, `token=`, `secret`, `password`, and `*.md`/`*.json` for credential *shapes*: AWS/GitHub/GitLab/Google/Slack/Anthropic/OpenAI key prefixes, PEM private-key headers, JWTs | **Detect every secret.** No entropy check, so a bare random string with no known prefix still slips through |
 | Index completeness for **top-level** pages in each tier's `index.md` | Check pages inside subdirectories (`tech/`, `decisions/`, …) — an orphaned page one level deep prints a `WARN`, not a failure, and doesn't fail the run either |
 | Confirms `ponytail`/`caveman` are `true` in a staged `claude/settings.json` | Confirm anything about a `claude/` subset that hasn't been staged yet (prints `SKIP`) |
 
@@ -23,10 +23,11 @@ normal state for a registered project you simply haven't cloned here.
 
 ## The known false-positive
 
-The secret grep is intentionally broad and *will* flag a page that merely discusses secrets
-(a design doc using the word "password" in a sentence about encryption, say). That's not a
-bug to silence — loosening the pattern to dodge it would also loosen it for a real leak.
-Treat a doctor `FAIL` on the secret scan as "go read the line," not "go patch the regex."
+The keyword grep is intentionally broad and *will* flag a JSON file that merely mentions
+secrets. It no longer runs over `*.md`, because prose *about* passwords tripped it on every
+design page. Pages are covered by the shape patterns instead, which only match the fixed
+prefixes real credentials carry. Treat a doctor `FAIL` on either scan as "go read the line,"
+not "go patch the regex."
 
 ## If you want more
 
