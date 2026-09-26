@@ -23,11 +23,12 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
   lives in the store, the repo gets a git-ignored symlink; and `link_auto_memory` (same two
   commands): Claude Code's machine-local auto memory dir moves to `projects/<key>/memory`, a
   symlink left in its place. Requires `jq`, `git`, `rsync`, `python3`, `rg` on `PATH`.
-- **`bin/mmm-query.py`** / **`bin/mmm-doctor.py`** — stdlib-only Python 3 (no pip installs).
+- **`bin/mmm-query.py`** / **`bin/mmm-doctor.py`** / **`bin/mmm-links.py`** — stdlib-only Python 3 (no pip installs).
   `mmm-query.py` is `rg --json` with wiki-structure awareness (frontmatter hits ranked over
   body hits, results grouped by page). `mmm-doctor.py` does structural checks: broken
   `[[wikilink]]`s (checked tree-wide, since pages cross-link between tiers), dangling
-  `[text](file.md)` links, oversized pages (150-line budget), unindexed pages.
+  `[text](file.md)` links, oversized pages (150-line budget), unindexed pages, plus `WARN`-only
+  frontmatter/age/`superseded_by`/`sources:` checks. `mmm-links.py` is backlinks and orphans.
 - **`hooks/*.mjs`** — Claude Code hooks, plain Node ESM, no dependencies, speaking Claude
   Code's hook JSON contract (stdin JSON in, `{continue: true, ...}` JSON out on stdout).
   Symlinked by `install.sh` into `~/.claude/hooks/` and registered in `~/.claude/settings.json`.
@@ -71,7 +72,7 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
 - **`mmm ask`** reduces the natural-language question to an `rg` alternation pattern
   (stopword-filtered) before calling `mmm-query.py --json`, then pipes those excerpts into one
   scoped `claude -p` call — never a raw semantic search.
-- **`mmm import`** hands off to an interactive `claude` session (not scripted) with
+- **`mmm import`** and **`mmm tidy`** hand off to an interactive `claude` session (not scripted) with
   `content-rules.md` as its instructions, since placement/normalization is a judgment call.
 
 ## Testing / verification

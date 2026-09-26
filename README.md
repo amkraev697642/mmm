@@ -31,6 +31,9 @@ mmm init .                  # link this project into the store (repeat per proje
 mmm rebalance               # keep every project's CLAUDE.md and auto memory in the store (pack runs it)
 mmm q "some term"           # instant, free, no model call
 mmm a "a real question"     # one cheap model call, scoped only to query's hits
+mmm a --save "..."          # same, and append the answer to this project's log.md
+mmm links some-page         # what links here, what it links to (--orphans: nothing links here)
+mmm tidy                    # a claude session that merges duplicates and drops stale facts
 mmm git log --stat          # ~/.mmm is a local git repo: history, diff, undo
 ```
 

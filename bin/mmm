@@ -468,9 +468,20 @@ cmd_unpack() {
 
 # --- query / ask ---------------------------------------------------------
 cmd_query() { python3 "$MMM_BIN/mmm-query.py" "$MMM_HOME" "$@"; }
+cmd_links() { python3 "$MMM_BIN/mmm-links.py" "$MMM_HOME" "$@"; }
+
+# the tier a command run from here should write to: this checkout's project, else global
+current_tier() {
+  local origin key
+  origin=$(git remote get-url origin 2>/dev/null) || { echo "$MMM_HOME/global"; return; }
+  key=$(jq -r --arg r "$origin" '.projects | to_entries[] | select(.value.remote==$r) | .key' "$REGISTRY" | head -1)
+  if [ -n "$key" ]; then echo "$MMM_HOME/projects/$key"; else echo "$MMM_HOME/global"; fi
+}
 
 cmd_ask() {
   need claude
+  local save=0
+  [ "${1:-}" = "--save" ] && { save=1; shift; }
   local q="$*" pattern
   # a question isn't a literal search term — reduce to keywords (rg alternation) before searching;
   # `mmm query` itself stays literal, this reduction is ask-only
@@ -485,8 +496,17 @@ print('|'.join(dict.fromkeys(kw)) if kw else sys.argv[1])
 " "$q")
   local hits
   hits=$(python3 "$MMM_BIN/mmm-query.py" "$MMM_HOME" --json "$pattern") || die "mmm query found nothing relevant to: $q"
-  printf '%s\n' "$hits" | claude -p "Given ONLY these wiki excerpts (JSON), answer concisely: $q
-Cite the page filename(s) you used. If the excerpts don't answer it, say so."
+  local answer
+  answer=$(printf '%s\n' "$hits" | claude -p "Given ONLY these wiki excerpts (JSON), answer concisely: $q
+Cite the page filename(s) you used. If the excerpts don't answer it, say so.")
+  printf '%s\n' "$answer"
+  [ "$save" = 1 ] || return 0
+  # log.md, not a new page: an answer is a synthesis worth keeping, but deciding where it belongs
+  # is placement judgment -- that's for the agent or 'mmm import', not a one-shot call
+  local log; log="$(current_tier)/log.md"
+  mkdir -p "$(dirname "$log")"
+  printf '\n## [%s] ask | %s\n\n%s\n' "$(date +%Y-%m-%d)" "$q" "$answer" >> "$log"
+  echo "mmm: saved to $log"
 }
 
 # --- import ------------------------------------------------------------------
@@ -510,6 +530,35 @@ Normalize into properly-formatted pages with YAML frontmatter, update the releva
 file(s), then run 'mmm doctor' and fix anything it flags before you're done."
 }
 
+# --- tidy ------------------------------------------------------------------
+# what Auto Dream / Letta's sleep-time agent do between sessions, but on request: import adds
+# knowledge, tidy is the matching pass that consolidates what accumulated
+cmd_tidy() {
+  need claude
+  local tier
+  case "${1:-}" in
+    --global) tier="$MMM_HOME/global" ;;
+    --project) [ -d "$MMM_HOME/projects/${2:-}" ] || die "unknown project: ${2:-}"; tier="$MMM_HOME/projects/$2" ;;
+    "") tier=$(current_tier) ;;
+    *) die "usage: mmm tidy [--global | --project <key>]" ;;
+  esac
+  local rules="$MMM_BIN/../content-rules.md"
+  [ -f "$rules" ] || die "content-rules.md missing at $rules — mmm install is incomplete"
+  snapshot "mmm: before tidy $(basename "$tier")"
+  exec claude "Tidy the mmm wiki tier at $tier (canonical store \$MMM_HOME=$MMM_HOME). Read $rules first.
+
+Consolidate, don't expand:
+- merge pages that cover the same topic; keep the better slug, fix every [[link]] to the other
+- where two pages contradict, find which is current (check the code or git log when a page has
+  sources:) and fix or delete the stale claim; mark reversed decisions with superseded_by
+- turn relative dates ('yesterday', 'last week') into absolute ones
+- drop notes that are only true for a finished task, or that the code/CLAUDE.md already says
+- fold $tier/log.md entries worth keeping into the page they belong to
+- keep index.md one line per page and in sync with what exists; bump updated on pages you change
+Leave memory/ (Claude Code's own auto memory) alone. The store is snapshotted in git; list what
+you changed at the end ('mmm git diff' shows it). Then run 'mmm doctor' and fix what it flags."
+}
+
 # --- dispatch ----------------------------------------------------------------
 usage() {
   cat <<'EOF'
@@ -526,8 +575,11 @@ usage:
   mmm pack [--project k1,k2] [--out f] [--no-global]   encrypted archive of ~/.mmm
   mmm unpack <archive> [--into dir]  extract an archive
   mmm query|q "<term>" [--project k] [--global-only] [--json]   instant, no LLM
-  mmm ask|a "<question>"             one cheap claude -p call, scoped to query's hits
+  mmm ask|a [--save] "<question>"    one cheap claude -p call, scoped to query's hits
+                                      (--save appends the answer to this tier's log.md)
+  mmm links <slug> | --orphans       backlinks/outlinks of a page, or pages nothing links to
   mmm import <file-or-folder>        interactive claude session: read, place, normalize into pages
+  mmm tidy [--global|--project k]    interactive claude session: merge duplicates, drop stale facts
   mmm git <args>                     git inside ~/.mmm (log, diff, checkout) — snapshotted at every
                                       session start, before pack and before unpack
 EOF
@@ -552,6 +604,8 @@ case "$cmd" in
   unpack) [ $# -ge 1 ] || die "usage: mmm unpack <archive>"; cmd_unpack "$@" ;;
   query|q) cmd_query "$@" ;;
   ask|a) cmd_ask "$@" ;;
+  links) cmd_links "$@" ;;
+  tidy) cmd_tidy "$@" ;;
   import) [ $# -ge 1 ] || die "usage: mmm import <file-or-folder>"; cmd_import "$@" ;;
   git) store_git "$@" ;;
   -h|--help|help) usage ;;
