@@ -204,6 +204,48 @@ link_claude_md() {
   echo "  $key: CLAUDE.md linked ✓"
 }
 
+# Claude Code's auto memory is machine-local by design (~/.claude/projects/<dir>/memory); moving
+# it into the store is what lets it travel with pack. Same adopt-then-symlink move as init_one.
+link_auto_memory() {
+  local key="$1" root="$2" store="$MMM_HOME/projects/$1/memory" common main mem
+  [ -d "$HOME/.claude" ] || return 0  # no Claude Code on this machine, nothing to adopt
+  common=$(git -C "$root" rev-parse --git-common-dir 2>/dev/null) || return 0
+  [[ "$common" = /* ]] || common="$root/$common"
+  # Claude Code keys the dir by the main checkout, so every worktree shares one memory dir
+  main=$(dirname "$(realpath_of "$common")")
+  mem="$HOME/.claude/projects/$(printf '%s' "$main" | sed 's/[^A-Za-z0-9]/-/g')/memory"
+  if [ -L "$mem" ]; then
+    if [ "$(realpath_of "$mem")" = "$(realpath_of "$store")" ]; then
+      echo "  $key: auto memory linked ✓"
+    else
+      echo "  $key: WARN auto memory $mem is a symlink to $(readlink "$mem"), not the store — left alone"
+    fi
+    return 0
+  fi
+  if [ -d "$mem" ]; then
+    mkdir -p "$store"
+    # another machine's memory may already be in the store: MEMORY.md especially will differ,
+    # and picking one side silently drops the other's index
+    local f clash=()
+    for f in "$mem"/*; do
+      [ -e "$f" ] || continue
+      if [ -e "$store/$(basename "$f")" ] && ! cmp -s "$f" "$store/$(basename "$f")"; then
+        clash+=("$(basename "$f")")
+      fi
+    done
+    if [ "${#clash[@]}" -gt 0 ]; then
+      echo "  $key: WARN auto memory in $mem and $store both have different: ${clash[*]} — merge them by hand, then re-run 'mmm rebalance'"
+      return 0
+    fi
+    rsync -a "$mem"/ "$store"/
+    rm -rf "$mem"
+    echo "  $key: moved auto memory into $store"
+  fi
+  mkdir -p "$store" "$(dirname "$mem")"
+  ln -s "$store" "$mem"
+  echo "  $key: auto memory linked ✓"
+}
+
 init_one() {
   local key="$1" root="$2" wiki="$3" store="$4" seed="$5" force_merge="$6"
   if [ "$key" != "global" ]; then
@@ -266,16 +308,18 @@ cmd_init() {
   init_one "$key" "$path" "$path/.omc/wiki" "$MMM_HOME/projects/$key" 1 "$force_merge"
   # after init_one, not inside it: init_one's first_time/--merge logic keys off the store dir not existing yet
   link_claude_md "$key" "$path"
+  link_auto_memory "$key" "$path"
 }
 
 # --- rebalance ---------------------------------------------------------------
-# the same move-into-store adoption `init` does, re-runnable across every registered project
+# the same move-into-store adoption `init` does (CLAUDE.md and auto memory), re-runnable across every registered project
 cmd_rebalance() {
   echo "-- rebalance --"
   local k path
   for k in $(jq -r '.projects | keys[]' "$REGISTRY"); do
     if path=$(resolve_path "$k"); then
       link_claude_md "$k" "$path"
+      link_auto_memory "$k" "$path"
     else
       echo "  $k: absent on this machine (registered, not found)"
     fi
@@ -451,8 +495,8 @@ usage:
                                       (a worktree/second clone of an already-initialized remote
                                        shares that project's wiki; --merge only if it grew its own)
   mmm doctor                         full health check (links, index, secrets, git-ignore)
-  mmm rebalance                      move each project's CLAUDE.md into the store, leave a git-ignored
-                                      symlink (runs automatically before pack)
+  mmm rebalance                      move each project's CLAUDE.md and Claude Code auto memory into the
+                                      store, leave symlinks behind (runs automatically before pack)
   mmm forget <key>                   drop a registered project (fixes a stale/absent entry)
   mmm pack [--project k1,k2] [--out f] [--no-global]   encrypted archive of ~/.mmm
   mmm unpack <archive> [--into dir]  extract an archive

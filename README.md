@@ -28,7 +28,7 @@ no data in it. **`~/.mmm`** (dotted) is your actual content — `mmm pack` only 
 ```
 mmm unpack mmm-2026-09.7z   # got handed one? extract it (password prompt)
 mmm init .                  # link this project into the store (repeat per project)
-mmm rebalance               # keep every project's CLAUDE.md in the store, not its repo (pack runs it)
+mmm rebalance               # keep every project's CLAUDE.md and auto memory in the store (pack runs it)
 mmm q "some term"           # instant, free, no model call
 mmm a "a real question"     # one cheap model call, scoped only to query's hits
 ```
@@ -39,6 +39,9 @@ What's actually automatic vs. what you (or your agent) still have to do:
   `index.md`, before anyone's typed anything.
 - **Prompted, not enforced:** finish a plan-mode task and a `Stop` hook reminds the agent,
   once, to file what it learned — a nudge it can ignore, not a quota.
+- **Automatic:** Claude Code's own auto memory (`~/.claude/projects/<dir>/memory`, normally
+  stuck on one machine) is moved into `~/.mmm/projects/<key>/memory` by `init`/`rebalance`
+  and symlinked back, so it travels with `pack` like everything else.
 - **Deterministic:** `mmm import some-notes.md` (reads, places, normalizes it) or just asking
   your agent to write a page — these are what actually grow the wiki.
 

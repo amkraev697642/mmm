@@ -20,7 +20,9 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
   each subcommand is a `cmd_*` function. Holds the project registry (`~/.mmm/registry.json`,
   keyed by git remote URL, not path — path is just a cached hint) and all symlink-adoption
   logic (`init_one`), plus `link_claude_md` (`init` and `rebalance`): a project's `CLAUDE.md`
-  lives in the store, the repo gets a git-ignored symlink. Requires `jq`, `git`, `rsync`, `python3`, `rg` on `PATH`.
+  lives in the store, the repo gets a git-ignored symlink; and `link_auto_memory` (same two
+  commands): Claude Code's machine-local auto memory dir moves to `projects/<key>/memory`, a
+  symlink left in its place. Requires `jq`, `git`, `rsync`, `python3`, `rg` on `PATH`.
 - **`bin/mmm-query.py`** / **`bin/mmm-doctor.py`** — stdlib-only Python 3 (no pip installs).
   `mmm-query.py` is `rg --json` with wiki-structure awareness (frontmatter hits ranked over
   body hits, results grouped by page). `mmm-doctor.py` does structural checks: broken
