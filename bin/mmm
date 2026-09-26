@@ -374,8 +374,12 @@ cmd_doctor() {
   echo "-- symlink health --"
   cmd_status
   [ "$STATUS_ISSUES" -gt 0 ] && fail=1
-  echo "-- links / index / size --"
-  python3 "$MMM_BIN/mmm-doctor.py" "$MMM_HOME" || fail=1
+  echo "-- links / index / size / frontmatter / sources --"
+  local paths='{}'
+  for k in $(jq -r '.projects | keys[]' "$REGISTRY"); do
+    path=$(resolve_path "$k") && paths=$(jq --arg k "$k" --arg p "$path" '.[$k] = $p' <<< "$paths")
+  done
+  MMM_PROJECT_PATHS="$paths" python3 "$MMM_BIN/mmm-doctor.py" "$MMM_HOME" || fail=1
   echo "-- claude/ subset plugins --"
   if [ -f "$MMM_HOME/claude/settings.json" ]; then
     local p val

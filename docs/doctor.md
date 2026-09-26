@@ -11,6 +11,7 @@ read-only reporting. `mmm pack` runs it first and refuses to produce an archive 
 | Frontmatter has `title`/`category`/`tags`/`updated` (`WARN`, not a failure) | Validate frontmatter values beyond presence and the `updated` date |
 | Pages whose `updated` is older than `MMM_STALE_DAYS` (default 180) — `WARN` | Decide a page is wrong just because it's old |
 | Links into a page marked `superseded_by` — `WARN` | Rewrite those links for you |
+| A project page's `sources:` files still exist and have no commits newer than its `updated` — `WARN` | Read the code to see whether the page is actually wrong now |
 | Page budget (150 lines), exempting `plans/` and `deep-research/` | Judge content: duplication, contradictions, factual accuracy (that's `mmm tidy`) |
 | `.omc` is git-ignored per registered project — **auto-repairs** via `.git/info/exclude` | Touch project git in any other way |
 | Symlink health per project (linked / dangling / unexpected target / not-yet-initialized) — **dangling or unexpected now fails doctor**, not just prints a note | Verify the archive itself, its encryption, or a real round-trip |

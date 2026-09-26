@@ -8,6 +8,9 @@ generic rules, not this user's personal content. `mmm import`, `mmm init`'s seed
 - Bite-sized: ~150 lines, one topic per page.
 - YAML frontmatter: `title`, `category`, `tags`, `updated` at minimum (`updated` as
   `YYYY-MM-DD`, bumped whenever the page's facts change, since doctor dates pages by it).
+- Optional, project pages: `sources:` — the repo files (relative to the repo root, `path:line`
+  allowed) the page's claims come from. `mmm doctor` warns once a cited file is deleted or has
+  commits newer than `updated`; re-read the code, then fix the page or just bump `updated`.
 - Optional: `superseded_by: "[[newer-slug]]"` when a page is kept for history but no longer
   true. Prefer updating the page in place; this is for decisions that were reversed.
 - Cross-link with `[[slug]]` (resolves by bare filename stem, globally unique across the whole

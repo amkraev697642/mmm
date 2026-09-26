@@ -6,8 +6,10 @@ Referential completeness is checked per-tier (global's own index.md, each projec
 index.md) but [[slug]] links are checked against the WHOLE tree, since pages legitimately
 cross-link between tiers (a project page linking to a global decision page, etc).
 """
+import json
 import os
 import re
+import subprocess
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -34,6 +36,33 @@ NO_FRONTMATTER_NAMES = SKIP_NAMES | {"tasks.md"}
 STALE_DAYS = int(os.environ.get("MMM_STALE_DAYS", "180"))
 FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+LINE_SUFFIX_RE = re.compile(r":\d+(-\d+)?$")
+# key -> checkout path, resolved by bin/mmm (registry + searchRoots) since only it knows how
+PROJECT_PATHS = json.loads(os.environ.get("MMM_PROJECT_PATHS") or "{}")
+
+
+def check_sources(tier_name: str, fm, updated: str):
+    """Copilot-style citation check: a page lists the repo files it describes in `sources:`,
+    and it's suspect once one is gone or has commits newer than the page's `updated`."""
+    repo = PROJECT_PATHS.get(tier_name)
+    sources = fm.get("sources") if fm else None
+    if not repo or not sources:
+        return []
+    if isinstance(sources, str):
+        sources = [sources]
+    problems = []
+    for src in sources:
+        rel = LINE_SUFFIX_RE.sub("", src)
+        if not (Path(repo) / rel).exists():
+            problems.append(f"{src} no longer exists")
+            continue
+        if not updated:
+            continue
+        last = subprocess.run(["git", "-C", repo, "log", "-1", "--format=%cs", "--", rel],
+                              capture_output=True, text=True).stdout.strip()
+        if last and last > updated:
+            problems.append(f"{src} changed {last}, page updated {updated}")
+    return problems
 
 
 def frontmatter(text: str):
@@ -101,6 +130,7 @@ def main() -> int:
     to_superseded = []
     missing_fields = []
     stale = []
+    unsourced = []
     stale_before = date.today() - timedelta(days=STALE_DAYS)
     for tier_name, f in all_pages:
         text = texts[f]
@@ -130,6 +160,8 @@ def main() -> int:
             m = DATE_RE.search(str(fm.get("updated", ""))) if fm else None
             if m and date.fromisoformat(m.group(1)) < stale_before and f.stem not in superseded:
                 stale.append((f, m.group(1)))
+            for problem in check_sources(tier_name, fm, m.group(1) if m else ""):
+                unsourced.append((f, problem))
 
     if broken:
         fail = True
@@ -170,6 +202,13 @@ def main() -> int:
             print(f"  {f}: updated {d}")
     else:
         print(f"PASS: no page older than {STALE_DAYS} days")
+
+    if unsourced:
+        print("WARN: pages whose cited sources moved on (re-check them against the code):")
+        for f, problem in unsourced:
+            print(f"  {f}: {problem}")
+    else:
+        print("PASS: every cited source still exists and predates its page's update")
 
     if to_superseded:
         print("WARN: links into superseded pages:")
