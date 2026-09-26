@@ -46,6 +46,9 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
   symlinks hooks, merges hook registration into `~/.claude/settings.json` via `jq`, offers
   optional companion plugin installs (oh-my-claudecode/ponytail/caveman), adds `bin/` to `PATH`.
   Idempotent — same command installs and updates.
+- **`integrations/mcp-server.mjs`** — dependency-free stdio MCP server (hand-rolled JSON-RPC,
+  no SDK): `mmm_query`/`mmm_list`/`mmm_read`/`mmm_write`, paths confined to `~/.mmm`. For MCP
+  clients without file access to the store; `install.sh` registers it for Cursor.
 - **`integrations/bootstrap.mdc`** — Cursor rule (symlinked to `~/.cursor/rules/`) giving
   Cursor the same wiki-routing awareness Claude Code gets from `CLAUDE.md` + hooks, since
   Cursor has no MCP access to the wiki paths.

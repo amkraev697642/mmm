@@ -25,7 +25,7 @@ else
   git clone "$REPO_URL" "$TARGET"
 fi
 
-chmod +x "$TARGET"/bin/mmm "$TARGET"/bin/*.py
+chmod +x "$TARGET"/bin/mmm "$TARGET"/bin/*.py "$TARGET"/integrations/mcp-server.mjs
 
 # Hooks are source-controlled here, not authored directly in ~/.claude/hooks/ (that's a
 # machine-local runtime location, not something a clone of this repo brings with it).
@@ -76,6 +76,17 @@ if [ -d "$HOME/.cursor" ]; then
   mkdir -p "$HOME/.cursor/rules"
   ln -sf "$TARGET/integrations/bootstrap.mdc" "$HOME/.cursor/rules/bootstrap.mdc"
   echo "mmm: Cursor found -> ~/.cursor/rules/bootstrap.mdc"
+  # the rule tells Cursor where the wiki is; the MCP server gives it tools to query/read/write it
+  CURSOR_MCP="$HOME/.cursor/mcp.json"
+  if command -v jq >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+    [ -f "$CURSOR_MCP" ] || printf '{}\n' > "$CURSOR_MCP"
+    TMP=$(mktemp)
+    jq --arg p "$TARGET/integrations/mcp-server.mjs" '.mcpServers.mmm = {"command":"node","args":[$p]}' \
+      "$CURSOR_MCP" > "$TMP" && mv "$TMP" "$CURSOR_MCP"
+    echo "mmm: registered the mmm MCP server in $CURSOR_MCP"
+  else
+    echo "mmm: WARN — jq or node not found, add the mmm MCP server to $CURSOR_MCP yourself (see docs/editors.md)"
+  fi
 fi
 
 # Optional: the oh-my-claudecode/ponytail/caveman plugins this tool's own conventions lean on
