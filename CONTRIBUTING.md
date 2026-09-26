@@ -15,6 +15,7 @@ read the function you're closest to touching before adding a new one alongside i
 ```
 mmm doctor
 bash -n bin/mmm && sh -n install.sh
+bash tests/smoke.sh   # init/doctor/q against a throwaway HOME
 ```
 
 before you send it. `mmm doctor` clean is the only ask.

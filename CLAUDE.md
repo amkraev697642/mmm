@@ -69,7 +69,9 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
 
 ## Testing / verification
 
-No test suite. `mmm doctor` (`cmd_doctor` in `bin/mmm`) is the closest thing to CI: secret
+`tests/smoke.sh` (plain bash, throwaway `HOME`, never touches the real `~/.mmm`) runs
+`init`, `doctor` and `q` end to end, with rsync/7z/claude hidden from `PATH` for the commands
+that shouldn't need them. Beyond that, `mmm doctor` (`cmd_doctor` in `bin/mmm`) is the closest thing to CI: secret
 scan, git-ignore check, symlink health (`cmd_status`), structural checks (`mmm-doctor.py`),
 companion-plugin check. Run it after any change touching `bin/mmm`, `bin/mmm-*.py`, or
 `content-rules.md`. There's no separate lint/build command — `bash -n bin/mmm` and
