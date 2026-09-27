@@ -24,7 +24,7 @@ PAGE_BUDGET = 150
 # plans/: design-doc prose that may illustrate [[link]] syntax without meaning a real link, and
 # is explicitly not bite-sized by design. deep-research/: allowed to be long, but its [[links]]
 # between real sub-pages should still be checked normally.
-EXEMPT_FROM_BUDGET = {"plans", "deep-research"}
+EXEMPT_FROM_BUDGET = {"plans", "deep-research", "skills"}
 EXEMPT_FROM_LINK_CHECK = {"plans"}
 # memory/: Claude Code's own auto memory, adopted into the store by `mmm init` -- its files use
 # Claude Code's frontmatter (name/description/type) and link to memories that may not exist yet
