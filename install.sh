@@ -230,6 +230,9 @@ else
 fi
 
 chmod +x "$TARGET"/bin/mmm "$TARGET"/bin/*.py "$TARGET"/integrations/mcp-server.mjs
+# bin/mmm's version string is stamped at commit time by .githooks/pre-commit -- wire it for
+# every checkout of the tool repo itself, not just this machine's first clone
+git -C "$TARGET" config core.hooksPath .githooks
 
 # Hooks are source-controlled here, not authored directly in ~/.claude/hooks/ (that's a
 # machine-local runtime location, not something a clone of this repo brings with it).

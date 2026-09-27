@@ -2,6 +2,7 @@
 # mmm — canonical wiki store, symlinked into each project's .omc/wiki. See ~/mmm/README.md.
 set -euo pipefail
 
+MMM_VERSION="0.0.3 build 270926"
 MMM_HOME="${MMM_HOME:-$HOME/.mmm}"  # private data. ~/mmm (no dot) is the tool itself — bin/, README, .git
 MMM_SELF="${BASH_SOURCE[0]}"
 [ -L "$MMM_SELF" ] && MMM_SELF="$(readlink "$MMM_SELF")"  # one hop is all we ever create
@@ -613,6 +614,7 @@ you changed at the end ('mmm git diff' shows it). Then run 'mmm doctor' and fix 
 
 # --- dispatch ----------------------------------------------------------------
 usage() {
+  echo "mmm $MMM_VERSION"
   cat <<'EOF'
 mmm — canonical wiki store + symlink adoption + query
 usage:

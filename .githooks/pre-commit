@@ -1,0 +1,7 @@
+#!/bin/sh
+# bin/mmm's MMM_VERSION is the version SSOT (no git tags) -- keep its build date current
+# so every commit stamps when it was built, not when the string was last hand-edited.
+today=$(date +%d%m%y)
+sed -i.bak -E "s/(MMM_VERSION=\"[0-9]+\.[0-9]+\.[0-9]+ build )[0-9]{6}(\")/\1${today}\2/" bin/mmm
+rm -f bin/mmm.bak
+git add bin/mmm
