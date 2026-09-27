@@ -42,10 +42,13 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
   - `plan-tax-collect.mjs` (`Stop`) — nags once if nothing under `~/.mmm` changed since the
     debt was marked ("paid" = any file mtime under `~/.mmm` newer than the mark).
 - **`install.sh`** — POSIX `sh` on purpose (piped through `sh`, which is `dash` on many
-  systems: no `set -o pipefail`, no arrays, no `[[`, no `local`). Clones/updates this repo,
-  symlinks hooks, merges hook registration into `~/.claude/settings.json` via `jq`, offers
-  optional companion plugin installs (oh-my-claudecode/ponytail/caveman), adds `bin/` to `PATH`.
-  Idempotent — same command installs and updates.
+  systems: no `set -o pipefail`, no arrays, no `[[`, no `local`). Refuses without `brew`. A
+  keyboard/mouse setup screen (raw `stty` + `dd` byte reads, numbered `R<n>_*` vars in place of
+  arrays) picks deps, Claude Code and companion plugins (greyed out until node+jq+claude), all
+  installed via one `brew install`. Then https-clones/updates this repo, symlinks hooks, merges
+  hook registration into `~/.claude/settings.json` via `jq`, adds `bin/` to `PATH`, and — given
+  a seed archive (arg, `MMM_SEED`, or prompt) — runs `mmm unpack`. Idempotent — same command
+  installs and updates. `MMM_NONINTERACTIVE=1` skips the screen.
 - **`integrations/mcp-server.mjs`** — dependency-free stdio MCP server (hand-rolled JSON-RPC,
   no SDK): `mmm_query`/`mmm_list`/`mmm_read`/`mmm_write`, paths confined to `~/.mmm`. For MCP
   clients without file access to the store; `install.sh` registers it for Cursor.
@@ -82,7 +85,9 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
 
 `tests/smoke.sh` (plain bash, throwaway `HOME`, never touches the real `~/.mmm`) runs
 `init`, `doctor` and `q` end to end, with rsync/7z/claude hidden from `PATH` for the commands
-that shouldn't need them. Beyond that, `mmm doctor` (`cmd_doctor` in `bin/mmm`) is the closest thing to CI: secret
+that shouldn't need them. `tests/install.sh` drives `install.sh` through a pty (`script`) with a
+stub `brew`: no-brew refusal, setup-screen keyboard/mouse/cascade, non-interactive mode, seeded
+install (unpack + linking), and `unpack`'s registry merge. Beyond that, `mmm doctor` (`cmd_doctor` in `bin/mmm`) is the closest thing to CI: secret
 scan, git-ignore check, symlink health (`cmd_status`), structural checks (`mmm-doctor.py`),
 companion-plugin check. Run it after any change touching `bin/mmm`, `bin/mmm-*.py`, or
 `content-rules.md`. There's no separate lint/build command — `bash -n bin/mmm` and

@@ -483,12 +483,39 @@ cmd_unpack() {
   done
   mkdir -p "$into"
   [ "$into" = "$MMM_HOME" ] && snapshot "mmm: before unpack $(basename "$archive")"
-  7z x "$archive" -o"$into"
-  echo "mmm: unpacked into $into — now run 'mmm init <path>' for each project present on this machine"
-  if [ "$into" = "$MMM_HOME" ] && [ -n "$(store_git status --porcelain)" ]; then
+  if [ "$into" != "$MMM_HOME" ]; then
+    7z x "$archive" -o"$into"
+    echo "mmm: unpacked into $into"
+    return
+  fi
+  need jq git rsync  # rsync/git: the linking below is cmd_init
+  # -aoa: overwrite without 7z's per-file prompt -- the snapshot above is the undo. Except the
+  # registry: a fresh machine already has an empty one (first-run self-heal), an old machine has
+  # projects the archive doesn't know about, so merge it (archive wins per key) instead
+  local before; before=$(cat "$REGISTRY")
+  7z x -aoa "$archive" -o"$into"
+  local tmp; tmp=$(mktemp)
+  jq --argjson old "$before" '{searchRoots: (($old.searchRoots // []) + (.searchRoots // []) | unique),
+      projects: (($old.projects // {}) + (.projects // {}))}' \
+    "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+  echo "mmm: unpacked into $into"
+  if [ -n "$(store_git status --porcelain)" ]; then
     echo "mmm: the archive changed these files (review with 'mmm git diff', undo one with 'mmm git checkout -- <file>'):"
     store_git status --short
   fi
+  # an archive is only useful once linked -- do the init a receiver would otherwise have to
+  # piece together from the README. Subshells: one project's refusal (die) mustn't stop the rest.
+  echo "-- linking --"
+  ( cmd_init --global ) || true
+  local k path remote
+  for k in $(jq -r '.projects | keys[]' "$REGISTRY"); do
+    if path=$(resolve_path "$k"); then
+      ( cmd_init "$path" ) || true
+    else
+      remote=$(jq -r --arg k "$k" '.projects[$k].remote' "$REGISTRY")
+      echo "  $k: not on this machine — git clone $remote, then 'mmm init <path>'"
+    fi
+  done
 }
 
 # --- query / ask ---------------------------------------------------------
@@ -598,7 +625,7 @@ usage:
                                       store, leave symlinks behind (runs automatically before pack)
   mmm forget <key>                   drop a registered project (fixes a stale/absent entry)
   mmm pack [--project k1,k2] [--out f] [--no-global]   encrypted archive of ~/.mmm
-  mmm unpack <archive> [--into dir]  extract an archive
+  mmm unpack <archive> [--into dir]  extract an archive, then link global + every project found here
   mmm query|q "<term>" [--project k] [--global-only] [--json]   instant, no LLM
   mmm ask|a [--save] "<question>"    one cheap claude -p call, scoped to query's hits
                                       (--save appends the answer to this tier's log.md)

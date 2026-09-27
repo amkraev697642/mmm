@@ -9,8 +9,18 @@ control. Just make sure you plan things — i.e., use plan mode.*
 curl -fsSL https://raw.githubusercontent.com/amkraev697642/mmm/main/install.sh | sh
 ```
 
-Clones (or updates) into `~/mmm`, adds it to your `PATH`, offers a `~/.claude/CLAUDE.md`
-directive so your agent uses it without being asked. Same command for install and update.
+Needs [Homebrew](https://brew.sh). A setup screen picks the missing dependencies, Claude
+Code and the optional plugins; then it clones (or updates) into `~/mmm`, adds it to your
+`PATH`, offers a `~/.claude/CLAUDE.md` directive so your agent uses it without being asked.
+Same command for install and update.
+
+Got handed a packed wiki? Pass it along and it's unpacked and linked in the same run:
+
+```
+curl -fsSL https://raw.githubusercontent.com/amkraev697642/mmm/main/install.sh | sh -s -- ~/Downloads/mmm-2026-09.7z
+```
+
+See [docs/setup.md](docs/setup.md) — including how to turn `~/mmm` into a fork you can contribute from.
 
 ## What it is
 
@@ -26,7 +36,7 @@ no data in it. **`~/.mmm`** (dotted) is your actual content — `mmm pack` only 
 ## Using it
 
 ```
-mmm unpack mmm-2026-09.7z   # got handed one? extract it (password prompt)
+mmm unpack mmm-2026-09.7z   # got handed one? extract + link global and every project found here
 mmm init .                  # link this project into the store (repeat per project)
 mmm rebalance               # keep every project's CLAUDE.md and auto memory in the store (pack runs it)
 mmm q "some term"           # instant, free, no model call
@@ -72,5 +82,5 @@ feel familiar — `mmm ask` is genuinely just `rg` piped into one `claude -p` ca
 
 ## More
 
-[CONTRIBUTING.md](CONTRIBUTING.md) · [docs/editors.md](docs/editors.md) (Claude Code vs.
+[docs/setup.md](docs/setup.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [docs/editors.md](docs/editors.md) (Claude Code vs.
 Cursor) · [docs/doctor.md](docs/doctor.md)

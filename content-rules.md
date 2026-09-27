@@ -19,6 +19,10 @@ generic rules, not this user's personal content. `mmm import`, `mmm init`'s seed
 - Cross-link with `[[slug]]` (resolves by bare filename stem, globally unique across the whole
   tree — don't use `[[index]]`, every tier has one and it can't disambiguate; link to `index.md`
   files with a real `[text](path/to/index.md)` link instead).
+- Paths are relative, never absolute: repo-relative (`bin/mmm`), store-relative
+  (`projects/<key>/…`), or home-relative (`~/.mmm`). The store travels with `mmm pack` to
+  machines with other usernames and other checkout locations, so `/Users/<name>/…` is wrong
+  everywhere but where it was written. This includes Claude Code's auto memory, which lives here too.
 
 ## Before writing
 - Check whether an existing page already covers the topic — update it instead of creating a new
