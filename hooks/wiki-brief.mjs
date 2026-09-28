@@ -23,6 +23,15 @@ process.stdin.on('end', () => {
 
   const projectKey = resolveProjectKey(cwd, mmmData);
   if (projectKey) {
+    // ensure_claude_md (bin/mmm) leaves this marker instead of blocking init on a non-interactive
+    // claude -p /init that has no approval channel -- this session IS the interactive one it was
+    // waiting for, so surface it once
+    const claudeMdPath = join(mmmData, 'projects', projectKey, 'CLAUDE.md');
+    try {
+      if (readFileSync(claudeMdPath, 'utf8').startsWith('<!-- mmm:placeholder -->')) {
+        lines.push(`${projectKey}: CLAUDE.md is a placeholder -- run /init to generate the real one`);
+      }
+    } catch { /* no CLAUDE.md yet at all, nothing to flag */ }
     const tasksPath = join(mmmData, 'projects', projectKey, 'tasks.md');
     if (existsSync(tasksPath)) {
       const items = [...readFileSync(tasksPath, 'utf8').matchAll(/^- \[ \] (.+)$/gm)].map((m) => m[1]);

@@ -2,7 +2,7 @@
 # mmm — canonical wiki store, symlinked into each project's .omc/wiki. See ~/mmm/README.md.
 set -euo pipefail
 
-MMM_VERSION="0.0.3 build 270926"
+MMM_VERSION="0.0.3 build 280926"
 MMM_HOME="${MMM_HOME:-$HOME/.mmm}"  # private data. ~/mmm (no dot) is the tool itself — bin/, README, .git
 MMM_SELF="${BASH_SOURCE[0]}"
 [ -L "$MMM_SELF" ] && MMM_SELF="$(readlink "$MMM_SELF")"  # one hop is all we ever create
@@ -181,19 +181,27 @@ seed_index() {
   fi
 }
 
+# first line of a placeholder CLAUDE.md mmm wrote itself -- wiki-brief.mjs greps for this same
+# literal to flag it at the next interactive session start
+CLAUDE_MD_PLACEHOLDER='<!-- mmm:placeholder -->'
 ensure_claude_md() {
   local root="$1" store="$2"
   [ -f "$root/CLAUDE.md" ] && return 0
   # a fresh checkout of an already-adopted project has its CLAUDE.md in the store, not in the repo
   [ -f "$store/CLAUDE.md" ] && return 0
-  # unlike import/ask (whose whole job is talking to claude), init's /init seed is a bonus, not
-  # its purpose -- a Cursor-only machine with no 'claude' CLI must still be able to init a project
-  if ! command -v claude >/dev/null 2>&1; then
-    echo "mmm: no CLAUDE.md in $root and no 'claude' CLI on PATH — skipping the /init seed (fine for a Cursor-only setup); add one yourself anytime"
-    return 0
-  fi
-  echo "mmm: no CLAUDE.md in $root — running claude /init (non-interactive)"
-  ( cd "$root" && claude -p "/init" )
+  # a synchronous 'claude -p /init' here has no approval channel (non-interactive) -- it either
+  # hangs or silently times out with nothing written. Instead: drop a placeholder instantly (no
+  # model call, no 'claude' CLI dependency) and let the next real interactive session run /init
+  # itself, where approval actually works. Lazy by design, not a fallback for a missing binary.
+  mkdir -p "$store"
+  cat > "$store/CLAUDE.md" <<EOF
+$CLAUDE_MD_PLACEHOLDER
+# CLAUDE.md
+
+mmm adopted this project before it had a CLAUDE.md. Run \`/init\` in your next interactive
+session to generate the real one -- this placeholder only keeps the symlink valid until then.
+EOF
+  echo "mmm: no CLAUDE.md in $root — left a placeholder ($store/CLAUDE.md), run /init interactively to fill it in"
 }
 
 # real file lives in the store, repo gets a git-ignored symlink; always returns 0 so one project never stops a rebalance or pack.
