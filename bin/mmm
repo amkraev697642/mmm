@@ -535,7 +535,7 @@ cmd_rebalance() {
 # --- doctor ------------------------------------------------------------------
 cmd_doctor() {
   need jq git rg
-  local fail=0
+  local fail=0 scope="${1:-}"  # comma-separated project-keys/domain-names, or empty for the whole store
   echo "== mmm doctor =="
   echo "-- secret scan --"
   if grep -rniE 'ticket=|token=|secret|password' "$MMM_HOME" \
@@ -571,7 +571,7 @@ cmd_doctor() {
   for k in $(jq -r '.projects | keys[]' "$REGISTRY"); do
     path=$(resolve_path "$k") && paths=$(jq --arg k "$k" --arg p "$path" '.[$k] = $p' <<< "$paths")
   done
-  MMM_PROJECT_PATHS="$paths" python3 "$MMM_BIN/mmm-doctor.py" "$MMM_HOME" || fail=1
+  MMM_PROJECT_PATHS="$paths" MMM_DOCTOR_SCOPE="$scope" python3 "$MMM_BIN/mmm-doctor.py" "$MMM_HOME" || fail=1
   echo "-- claude/ subset plugins --"
   if [ -f "$MMM_HOME/claude/settings.json" ]; then
     local p val
@@ -601,16 +601,6 @@ cmd_pack() {
   done
   snapshot "mmm: before pack"
   cmd_rebalance  # before doctor, so a CLAUDE.md that slipped back into a repo is in the store when it is archived
-  echo "mmm: running doctor before packing..."
-  cmd_doctor  # full battery, not just secrets — its own "ISSUES FOUND" exits 1 and stops pack here
-  [ -n "$out" ] || out="mmm-$(date +%Y%m%d).7z"
-  # 7z runs from inside $MMM_HOME below, so a relative --out would land in the store itself
-  # (and get swept into the next pack) instead of where the user ran the command
-  case "$out" in /*) ;; *) out="$PWD/$out" ;; esac
-  # bin/ lives in ~/mmm (the tool), not ~/.mmm (the data) — reinstall the tool separately
-  local args=()
-  [ "$no_global" = 1 ] || args+=(global)
-  [ -d "$MMM_HOME/claude" ] && args+=(claude)
 
   local domains_arr=()
   if [ -n "$domain_list" ]; then
@@ -620,6 +610,26 @@ cmd_pack() {
     [ -n "$projects" ] || projects=$(jq -r --argjson doms "$dj0" \
       '.projects | to_entries[] | select(.value.domains // [] | any(. as $x | $doms | index($x) != null)) | .key' \
       "$REGISTRY" | paste -sd, -)
+  fi
+
+  echo "mmm: running doctor before packing..."
+  # unscoped (plain `mmm pack`, no --project/--domain): full battery over the whole store, same
+  # as `mmm doctor`. Scoped: link resolution still checks the WHOLE tree (pages legitimately
+  # cross-link between tiers), but FAIL/WARN reporting is limited to the tiers being shipped, so
+  # e.g. an unrelated project's stale page can't block packing a different one.
+  local doctor_scope="$projects"
+  [ -n "$domain_list" ] && doctor_scope="${doctor_scope:+$doctor_scope,}$domain_list"
+  cmd_doctor "$doctor_scope"  # its own "ISSUES FOUND" exits 1 and stops pack here
+  [ -n "$out" ] || out="mmm-$(date +%Y%m%d).7z"
+  # 7z runs from inside $MMM_HOME below, so a relative --out would land in the store itself
+  # (and get swept into the next pack) instead of where the user ran the command
+  case "$out" in /*) ;; *) out="$PWD/$out" ;; esac
+  # bin/ lives in ~/mmm (the tool), not ~/.mmm (the data) — reinstall the tool separately
+  local args=()
+  [ "$no_global" = 1 ] || args+=(global)
+  [ -d "$MMM_HOME/claude" ] && args+=(claude)
+
+  if [ -n "$domain_list" ]; then
     local d
     for d in "${domains_arr[@]}"; do
       [ -d "$MMM_HOME/domains/$d" ] && args+=("domains/$d")

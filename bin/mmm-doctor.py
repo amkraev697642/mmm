@@ -39,6 +39,11 @@ DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 LINE_SUFFIX_RE = re.compile(r":\d+(-\d+)?$")
 # key -> checkout path, resolved by bin/mmm (registry + searchRoots) since only it knows how
 PROJECT_PATHS = json.loads(os.environ.get("MMM_PROJECT_PATHS") or "{}")
+# set by `mmm pack --project/--domain`: tier names (project keys and/or domain names) being
+# shipped. Link resolution still runs over the WHOLE tree regardless (see module docstring) --
+# only which pages' issues get reported/failed on is limited to this scope. Empty = everything,
+# same as plain `mmm doctor`.
+SCOPE = {s for s in os.environ.get("MMM_DOCTOR_SCOPE", "").split(",") if s}
 
 
 def check_sources(tier_name: str, fm, updated: str):
@@ -138,6 +143,8 @@ def main() -> int:
     unsourced = []
     stale_before = date.today() - timedelta(days=STALE_DAYS)
     for tier_name, f in all_pages:
+        if SCOPE and tier_name not in SCOPE:
+            continue  # slug_to_path above still covers it, so cross-tier links TO it still resolve
         text = texts[f]
         # log.md is a historical record (like plans/) -- a link inside it was true when written,
         # not a claim the target still exists now
@@ -168,13 +175,15 @@ def main() -> int:
             for problem in check_sources(tier_name, fm, m.group(1) if m else ""):
                 unsourced.append((f, problem))
 
+    checked = [f for t, f in all_pages if not SCOPE or t in SCOPE]
     if broken:
         fail = True
         print("FAIL: broken [[links]]:")
         for f, slug in broken:
             print(f"  {f}: [[{slug}]] has no matching page")
     else:
-        print(f"PASS: all [[links]] resolve ({len(all_pages)} pages checked)")
+        scope_note = f", resolved against the full {len(all_pages)}-page tree" if SCOPE else ""
+        print(f"PASS: all [[links]] resolve ({len(checked)} pages checked{scope_note})")
 
     if dangling_md_links:
         fail = True
@@ -222,6 +231,8 @@ def main() -> int:
 
     unindexed = []
     for tier_name, tier_dir in tiers(root):
+        if SCOPE and tier_name not in SCOPE:
+            continue
         idx = tier_dir / "index.md"
         idx_text = idx.read_text(errors="replace") if idx.is_file() else ""
         for f in tier_dir.glob("*.md"):
