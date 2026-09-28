@@ -679,6 +679,18 @@ cmd_pack() {
     registry_src="$registry_tmpdir/registry.json"
   fi
 
+  # a --project/--domain archive goes to someone else, not back onto this machine (an unscoped
+  # `mmm pack` is a personal backup and keeps these as-is, since restoring it on another of your
+  # own machines with the same layout is the point). A domain's `root` and top-level
+  # `searchRoots` are local-machine breadcrumbs -- an absolute path with this machine's username
+  # in it, meaningless to a recipient, and exactly what caused a real symlink mixup the one time
+  # this machine re-unpacked its own archive.
+  if [ -n "$registry_tmpdir" ]; then
+    trimmed=$(mktemp)
+    jq 'del(.searchRoots) | .domains |= with_entries(.value |= del(.root))' \
+      "$registry_tmpdir/registry.json" > "$trimmed" && mv "$trimmed" "$registry_tmpdir/registry.json"
+  fi
+
   # -mhe=on (header encryption) is 7z-format-only; 7z rejects it with E_INVALIDARG for any
   # other archive type, so a .zip --out just drops it and relies on -p's own zip encryption.
   # -mem=AES256 is not a recognized switch on this p7zip build and made every `mmm pack` fail.
@@ -741,7 +753,14 @@ cmd_unpack() {
   for d in $(jq -r '.domains // {} | keys[]' "$REGISTRY"); do
     local root missing
     root=$(jq -r --arg d "$d" '.domains[$d].root // empty' "$REGISTRY")
-    [ -n "$root" ] || continue
+    if [ -z "$root" ]; then
+      # a domain arrives rootless from a --domain/--project archive on purpose (fix for the
+      # username/path leak) -- sources are already known from the archive, so the receiver only
+      # needs to point it at a folder here, same one-time step 'developer-advocate'-style pure
+      # aspects always needed
+      echo "  $d: no root on this machine yet — 'mmm init --domain $d <path>' to adopt its repos here"
+      continue
+    fi
     missing=0
     local pk
     for pk in $(jq -r --arg d "$d" '.projects | to_entries[] | select(.value.domains // [] | index($d)) | .key' "$REGISTRY"); do
