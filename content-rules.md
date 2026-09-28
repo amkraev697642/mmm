@@ -45,8 +45,12 @@ resolution check, since a design doc may use `[[...]]` to illustrate the syntax 
 than as a real link.
 
 ## Placement rule
-Would this help on a *different* project too? → global (`~/.mmm/global`). Otherwise → that
-project's own wiki (`~/.mmm/projects/<key>`). `tasks.md` is always project-local, never global,
+Would this help on a project outside this one's domain(s) too, or is it unrelated to any domain?
+→ global (`~/.mmm/global`). Would it help every project of one domain but not projects outside
+it? → that domain's wiki (`~/.mmm/domains/<name>`). Otherwise → that project's own wiki
+(`~/.mmm/projects/<key>`). A domain is a cross-cutting concern (e.g. "video encoding" or
+"this client's infra"), not a folder — see `mmm status`/`registry.json` for which domain(s), if
+any, the current project belongs to; a project can belong to more than one. `tasks.md` is always project-local, never global,
 even though it needs to travel with `mmm pack` like everything else. Likewise a project's
 `CLAUDE.md`: the real file lives at `projects/<key>/CLAUDE.md` and the repo only gets a
 git-ignored symlink (`mmm rebalance` maintains it), so it is never committed to the work repo.

@@ -15,12 +15,12 @@ const MMM_CLI = join(dirname(realpathSync(fileURLToPath(import.meta.url))), '..'
 const TOOLS = [
   {
     name: 'mmm_query',
-    description: 'Search the mmm wiki (global + project pages) for a literal term. Instant, no LLM. Returns pages ranked by title/tag hits, with snippets. Use before re-deriving anything.',
-    inputSchema: { type: 'object', properties: { term: { type: 'string' }, project: { type: 'string', description: 'project key to search besides global' } }, required: ['term'] },
+    description: 'Search the mmm wiki (global + domain + project pages) for a literal term. Instant, no LLM. Returns pages ranked by title/tag hits, with snippets. Use before re-deriving anything.',
+    inputSchema: { type: 'object', properties: { term: { type: 'string' }, project: { type: 'string', description: 'project key to search besides global (also reaches its domain tier(s))' } }, required: ['term'] },
   },
   {
     name: 'mmm_list',
-    description: 'List wiki pages, as paths relative to ~/.mmm. Optionally only under one tier, e.g. "global" or "projects/<key>".',
+    description: 'List wiki pages, as paths relative to ~/.mmm. Optionally only under one tier, e.g. "global", "domains/<name>" or "projects/<key>".',
     inputSchema: { type: 'object', properties: { under: { type: 'string' } } },
   },
   {

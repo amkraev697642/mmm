@@ -2,7 +2,7 @@
 # mmm — canonical wiki store, symlinked into each project's .omc/wiki. See ~/mmm/README.md.
 set -euo pipefail
 
-MMM_VERSION="0.0.3 build 280926"
+MMM_VERSION="0.0.4 build 280926"
 MMM_HOME="${MMM_HOME:-$HOME/.mmm}"  # private data. ~/mmm (no dot) is the tool itself — bin/, README, .git
 MMM_SELF="${BASH_SOURCE[0]}"
 [ -L "$MMM_SELF" ] && MMM_SELF="$(readlink "$MMM_SELF")"  # one hop is all we ever create
@@ -63,6 +63,18 @@ fi
 realpath_of() { python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$1"; }
 expand_tilde() { printf '%s' "${1/#\~/$HOME}"; }
 
+# a domain's pointcut is host+owner, not host alone -- github.com carries both your org's repos
+# and third-party clones in the same root. Normalizes git@h:o/r.git, https://h/o/r and
+# ssh://git@h/o/r (no port) to "h/o"; a GitLab subgroup's first path segment counts as the owner.
+host_owner() {
+  local rest="${1#*://}"
+  rest="${rest#*@}"
+  case "$rest" in *:*) rest="${rest/://}" ;; esac
+  rest="${rest%.git}"
+  local host="${rest%%/*}" after="${rest#*/}"
+  printf '%s/%s\n' "$host" "${after%%/*}"
+}
+
 # mktemp/EnterWorktree-style checkouts live here — never worth a permanent registry entry
 TMPROOT="$(realpath_of "${TMPDIR:-/tmp}")"
 is_under_tmp() { case "$(realpath_of "$1")" in "$TMPROOT"/*) return 0 ;; *) return 1 ;; esac; }
@@ -105,7 +117,7 @@ resolve_path() {
       origin=$(git -C "$repo" remote get-url origin 2>/dev/null || true)
       if [ "$origin" = "$remote" ]; then echo "$repo"; return 0; fi
     done < <(find "$root" -maxdepth 5 -type d -name .git 2>/dev/null)
-  done < <(jq -r '.searchRoots[]' "$REGISTRY")
+  done < <(jq -r '(.searchRoots // []) + ([.domains // {} | .[] | .root] | map(select(.))) | .[]' "$REGISTRY")
   return 1
 }
 
@@ -153,6 +165,16 @@ cmd_status() {
   STATUS_ISSUES=0
   echo "global:"
   status_one "global" "$HOME/.omc/wiki" "$MMM_HOME/global"
+  echo "domains:"
+  local d root
+  for d in $(jq -r '.domains // {} | keys[]' "$REGISTRY"); do
+    root=$(jq -r --arg d "$d" '.domains[$d].root // empty' "$REGISTRY")
+    if [ -n "$root" ]; then
+      status_one "$d" "$(expand_tilde "$root")/.omc/wiki" "$MMM_HOME/domains/$d"
+    else
+      echo "  $d: no root on this machine (aspect only)"
+    fi
+  done
   echo "projects:"
   local k path
   for k in $(jq -r '.projects | keys[]' "$REGISTRY"); do
@@ -288,8 +310,10 @@ link_auto_memory() {
 }
 
 init_one() {
-  local key="$1" root="$2" wiki="$3" store="$4" seed="$5" force_merge="$6"
-  if [ "$key" != "global" ]; then
+  local key="$1" root="$2" wiki="$3" store="$4" seed="$5" force_merge="$6" kind="${7:-project}"
+  # global/domain roots aren't git repos (a domain root is just a folder of repos) -- only an
+  # actual project checkout gets the .gitignore and CLAUDE.md treatment
+  if [ "$kind" = "project" ]; then
     ensure_ignored "$root" .omc || die "could not confirm .omc is git-ignored in $root — refusing to init"
     [ "$seed" = 1 ] && ensure_claude_md "$root" "$store"
   fi
@@ -327,12 +351,23 @@ yourself, then re-run with 'mmm init $root --merge' if that's really what you wa
 
 cmd_init() {
   need jq git rsync
-  local target="$1" force_merge=0
-  [ "${2:-}" = "--merge" ] && force_merge=1
-  if [ "$target" = "--global" ]; then
-    init_one "global" "$HOME/.omc" "$HOME/.omc/wiki" "$MMM_HOME/global" 0 "$force_merge"
-    return
-  fi
+  case "${1:-}" in
+    --global)
+      local force_merge=0
+      [ "${2:-}" = "--merge" ] && force_merge=1
+      init_one "global" "$HOME/.omc" "$HOME/.omc/wiki" "$MMM_HOME/global" 0 "$force_merge" global
+      return ;;
+    --domain) cmd_init_domain "$@"; return ;;
+  esac
+  local target="$1"; shift
+  local force_merge=0 domains=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --merge) force_merge=1; shift ;;
+      --domain) domains+=("$2"); shift 2 ;;
+      *) die "unknown init option: $1" ;;
+    esac
+  done
   local path origin key
   path=$(cd "$target" && pwd)
   origin=$(git -C "$path" remote get-url origin 2>/dev/null) || die "not a git repo with an origin remote: $path"
@@ -347,11 +382,137 @@ cmd_init() {
   else
     echo "mmm: '$key' already registered (remote $origin) — same project, this is another checkout/worktree of it, sharing its wiki"
   fi
-  init_one "$key" "$path" "$path/.omc/wiki" "$MMM_HOME/projects/$key" 1 "$force_merge"
+  init_one "$key" "$path" "$path/.omc/wiki" "$MMM_HOME/projects/$key" 1 "$force_merge" project
   # after init_one, not inside it: init_one's first_time/--merge logic keys off the store dir not existing yet
   link_claude_md "$key" "$path"
   link_claude_md "$key" "$path" AGENTS.md
   link_auto_memory "$key" "$path"
+
+  # domain membership: an explicit --domain always joins (and creates the domain if new); with
+  # none given, auto-join every existing domain whose sources match this repo's host/owner
+  local ho; ho=$(host_owner "$origin")
+  local d tmp
+  # bash 3.2 (macOS default) throws "unbound variable" on "${arr[@]}" for an empty array under
+  # set -u -- guard every iteration over domains/domains_arr with a length check first, here and below
+  if [ "${#domains[@]}" -gt 0 ]; then
+    for d in "${domains[@]}"; do
+      tmp=$(mktemp)
+      jq --arg d "$d" '.domains[$d] = (.domains[$d] // {sources: []})' "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+    done
+  fi
+  if [ "${#domains[@]}" -eq 0 ]; then
+    while IFS= read -r d; do
+      [ -n "$d" ] && domains+=("$d")
+    done < <(jq -r --arg h "$ho" '.domains // {} | to_entries[] | select(.value.sources // [] | index($h)) | .key' "$REGISTRY")
+  fi
+  if [ "${#domains[@]}" -gt 0 ]; then
+    local dj; dj=$(printf '%s\n' "${domains[@]}" | jq -R . | jq -s 'unique')
+    tmp=$(mktemp)
+    jq --arg k "$key" --argjson add "$dj" \
+      '.projects[$k].domains = ((.projects[$k].domains // []) + $add | unique)' \
+      "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+    echo "mmm: '$key' is a member of domain(s): $(IFS=,; echo "${domains[*]}")"
+  fi
+}
+
+# a domain is an aspect, not a folder: its pointcut (`sources`, host/owner strings) decides
+# which repos under its root join it, many-to-many with other domains. Re-running this is how you
+# sync a domain -- adopt new matches, clone members missing on this machine.
+cmd_init_domain() {
+  shift # the literal "--domain"
+  local d="$1"; shift
+  [ -n "$d" ] || die "usage: mmm init --domain <name> [root] [--from host/owner]..."
+  local root="" from=() no_clone=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --from) from+=("$2"); shift 2 ;;
+      --no-clone) no_clone=1; shift ;;
+      -*) die "unknown init --domain option: $1" ;;
+      *) root="$1"; shift ;;
+    esac
+  done
+
+  # normalize to absolute up front, the same as pathHint does for a project -- resolve_path's
+  # expand_tilde on the way back out is what makes a "~/work"-typed root portable, not the write.
+  # mkdir before resolving: a brand-new root won't exist yet for `cd` to resolve.
+  if [ -n "$root" ]; then
+    root=$(expand_tilde "$root")
+    mkdir -p "$root"
+    root=$(cd "$root" && pwd)
+  fi
+
+  local tmp
+  tmp=$(mktemp)
+  jq --arg d "$d" '.domains[$d] = (.domains[$d] // {sources: []})' "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+  if [ -n "$root" ]; then
+    tmp=$(mktemp)
+    jq --arg d "$d" --arg r "$root" '.domains[$d].root = $r' "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+  fi
+  if [ "${#from[@]}" -gt 0 ]; then
+    local fj; fj=$(printf '%s\n' "${from[@]}" | jq -R . | jq -s .)
+    tmp=$(mktemp)
+    jq --arg d "$d" --argjson add "$fj" \
+      '.domains[$d].sources = ((.domains[$d].sources // []) + $add | unique)' \
+      "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+  fi
+
+  root=$(jq -r --arg d "$d" '.domains[$d].root // empty' "$REGISTRY")
+  root=$(expand_tilde "$root")
+  # a pure aspect (no root) skips the on-disk wiki link -- there's nowhere to put .omc/wiki
+  [ -n "$root" ] && { mkdir -p "$root"; init_one "$d" "$root" "$root/.omc/wiki" "$MMM_HOME/domains/$d" 0 0 domain; }
+
+  local sources; sources=$(jq -r --arg d "$d" '.domains[$d].sources // [] | .[]' "$REGISTRY")
+  if [ -z "$sources" ]; then
+    if [ -z "$root" ]; then
+      echo "mmm: domain '$d' created (no root, no sources) — 'mmm init <path> --domain $d' joins one project at a time"
+      return 0
+    fi
+    echo "mmm: domain '$d' has no sources yet — host/owner groups found under $root:"
+    { while IFS= read -r gitdir; do
+        local repo; repo="${gitdir%/.git}"
+        case "$(basename "$repo")" in .*) continue ;; esac  # dot-dirs: backups, not real checkouts
+        local origin; origin=$(git -C "$repo" remote get-url origin 2>/dev/null) || continue
+        host_owner "$origin"
+      done < <(find "$root" -maxdepth 3 -type d -name .git 2>/dev/null); } | sort | uniq -c | sort -rn
+    echo "mmm: re-run with --from <host/owner> (repeatable) to adopt matching repos"
+    return 0
+  fi
+
+  # ponytail: a rootless domain (pure aspect) has nowhere to scan, so it only gains members via
+  # explicit 'mmm init <path> --domain d' -- add scanning across searchRoots/other domain roots
+  # if a real cross-root aspect ever needs auto-adopt.
+  if [ -n "$root" ]; then
+    echo "mmm: adopting repos under $root matching: $(printf '%s' "$sources" | paste -sd, -)"
+    local gitdir
+    while IFS= read -r gitdir; do
+      local repo; repo="${gitdir%/.git}"
+      case "$(basename "$repo")" in .*) continue ;; esac
+      local origin; origin=$(git -C "$repo" remote get-url origin 2>/dev/null) || continue
+      local ho; ho=$(host_owner "$origin")
+      if printf '%s\n' "$sources" | grep -qxF "$ho"; then
+        ( cmd_init "$repo" --domain "$d" ) || true
+      else
+        echo "  skipped (third-party: $ho): $repo"
+      fi
+    done < <(find "$root" -maxdepth 3 -type d -name .git 2>/dev/null)
+  fi
+
+  [ "$no_clone" = 1 ] && return 0
+  if [ -z "$root" ]; then
+    echo "mmm: domain '$d' has no root — skipping clone of missing members ('mmm init <path> --domain $d' adds one by hand)"
+    return 0
+  fi
+  local key remote
+  for key in $(jq -r --arg d "$d" '.projects | to_entries[] | select(.value.domains // [] | index($d)) | .key' "$REGISTRY"); do
+    resolve_path "$key" >/dev/null 2>&1 && continue
+    remote=$(jq -r --arg k "$key" '.projects[$k].remote' "$REGISTRY")
+    echo "mmm: cloning missing domain member '$key' from $remote into $root/$key"
+    if git clone "$remote" "$root/$key"; then
+      ( cmd_init "$root/$key" --domain "$d" ) || true
+    else
+      echo "  $key: clone failed — skipping"
+    fi
+  done
 }
 
 # --- rebalance ---------------------------------------------------------------
@@ -428,10 +589,11 @@ cmd_doctor() {
 # --- pack / unpack -----------------------------------------------------------
 cmd_pack() {
   need 7z jq git
-  local projects="" out="" no_global=0
+  local projects="" out="" no_global=0 domain_list=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) projects="$2"; shift 2 ;;
+      --domain) domain_list="$2"; shift 2 ;;
       --out) out="$2"; shift 2 ;;
       --no-global) no_global=1; shift ;;
       *) die "unknown pack option: $1" ;;
@@ -450,10 +612,24 @@ cmd_pack() {
   [ "$no_global" = 1 ] || args+=(global)
   [ -d "$MMM_HOME/claude" ] && args+=(claude)
 
-  # a --project archive that still shipped the FULL registry would leak every other project's
-  # remote URL and local path -- defeating the point of restricting the archive at all. Build a
-  # filtered copy in its own temp dir and add it as a single standalone file (named exactly
-  # "registry.json", so it lands at the path unpack expects); the real file is never touched.
+  local domains_arr=()
+  if [ -n "$domain_list" ]; then
+    IFS=',' read -ra domains_arr <<< "$domain_list"
+    local dj0; dj0=$(printf '%s\n' "${domains_arr[@]}" | jq -R . | jq -s .)
+    # --domain implies its member projects, unless --project narrowed that further already
+    [ -n "$projects" ] || projects=$(jq -r --argjson doms "$dj0" \
+      '.projects | to_entries[] | select(.value.domains // [] | any(. as $x | $doms | index($x) != null)) | .key' \
+      "$REGISTRY" | paste -sd, -)
+    local d
+    for d in "${domains_arr[@]}"; do
+      [ -d "$MMM_HOME/domains/$d" ] && args+=("domains/$d")
+    done
+  fi
+
+  # a --project/--domain archive that still shipped the FULL registry would leak every other
+  # project's remote URL and local path -- defeating the point of restricting the archive at all.
+  # Build a filtered copy in its own temp dir and add it as a single standalone file (named
+  # exactly "registry.json", so it lands at the path unpack expects); the real file untouched.
   local registry_src="$REGISTRY" registry_tmpdir=""
   if [ -n "$projects" ]; then
     IFS=',' read -ra keys <<< "$projects"
@@ -469,8 +645,28 @@ cmd_pack() {
       '.projects |= with_entries(select(.key as $k | $keys | index($k) != null))' \
       "$REGISTRY" > "$registry_tmpdir/registry.json"
     registry_src="$registry_tmpdir/registry.json"
+  elif [ -n "$domain_list" ]; then
+    # --domain matched zero projects: ship the domain wiki/wikis alone, not the whole store
+    registry_tmpdir=$(mktemp -d)
+    jq '.projects = {}' "$REGISTRY" > "$registry_tmpdir/registry.json"
+    registry_src="$registry_tmpdir/registry.json"
   else
     [ -d "$MMM_HOME/projects" ] && args+=(projects)
+  fi
+
+  # trim to the selected domains: drop every other domain's entry, and drop every shipped
+  # project's membership in a domain that isn't going along -- the same leak the projects filter
+  # above already guards against, just for domain names instead of project keys
+  if [ -n "$domain_list" ]; then
+    [ -n "$registry_tmpdir" ] || { registry_tmpdir=$(mktemp -d); cp "$REGISTRY" "$registry_tmpdir/registry.json"; }
+    local dj; dj=$(printf '%s\n' "${domains_arr[@]}" | jq -R . | jq -s .)
+    local trimmed; trimmed=$(mktemp)
+    jq --argjson doms "$dj" '
+      .domains |= with_entries(select(.key as $k | $doms | index($k) != null)) |
+      .projects |= (with_entries(.value.domains |=
+        (if . then [.[] | select(. as $x | $doms | index($x) != null)] else . end)))
+    ' "$registry_tmpdir/registry.json" > "$trimmed" && mv "$trimmed" "$registry_tmpdir/registry.json"
+    registry_src="$registry_tmpdir/registry.json"
   fi
 
   # -mhe=on (header encryption) is 7z-format-only; 7z rejects it with E_INVALIDARG for any
@@ -505,6 +701,7 @@ cmd_unpack() {
   7z x -aoa "$archive" -o"$into"
   local tmp; tmp=$(mktemp)
   jq --argjson old "$before" '{searchRoots: (($old.searchRoots // []) + (.searchRoots // []) | unique),
+      domains: (($old.domains // {}) + (.domains // {})),
       projects: (($old.projects // {}) + (.projects // {}))}' \
     "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
   echo "mmm: unpacked into $into"
@@ -513,9 +710,15 @@ cmd_unpack() {
     store_git status --short
   fi
   # an archive is only useful once linked -- do the init a receiver would otherwise have to
-  # piece together from the README. Subshells: one project's refusal (die) mustn't stop the rest.
+  # piece together from the README. Subshells: one project's/domain's refusal mustn't stop the rest.
   echo "-- linking --"
   ( cmd_init --global ) || true
+  local d
+  for d in $(jq -r '.domains // {} | keys[]' "$REGISTRY"); do
+    # --no-clone: unpack only links what's already on disk, same as the project loop below --
+    # cloning a domain's missing members is a deliberate, separate 'mmm init --domain d'
+    ( cmd_init --domain "$d" --no-clone ) || true
+  done
   local k path remote
   for k in $(jq -r '.projects | keys[]' "$REGISTRY"); do
     if path=$(resolve_path "$k"); then
@@ -524,6 +727,17 @@ cmd_unpack() {
       remote=$(jq -r --arg k "$k" '.projects[$k].remote' "$REGISTRY")
       echo "  $k: not on this machine — git clone $remote, then 'mmm init <path>'"
     fi
+  done
+  for d in $(jq -r '.domains // {} | keys[]' "$REGISTRY"); do
+    local root missing
+    root=$(jq -r --arg d "$d" '.domains[$d].root // empty' "$REGISTRY")
+    [ -n "$root" ] || continue
+    missing=0
+    local pk
+    for pk in $(jq -r --arg d "$d" '.projects | to_entries[] | select(.value.domains // [] | index($d)) | .key' "$REGISTRY"); do
+      resolve_path "$pk" >/dev/null 2>&1 || missing=$((missing + 1))
+    done
+    [ "$missing" -gt 0 ] && echo "  $d: $missing member(s) missing — 'mmm init --domain $d' clones them into $(expand_tilde "$root")"
   done
 }
 
@@ -627,14 +841,21 @@ usage() {
 mmm — canonical wiki store + symlink adoption + query
 usage:
   mmm status                         link-health check (default)
-  mmm init <path> | --global [--merge]   one-time: move+link a project's/global wiki into ~/.mmm
-                                      (a worktree/second clone of an already-initialized remote
-                                       shares that project's wiki; --merge only if it grew its own)
+  mmm init <path> [--domain d]... | --global [--merge]   one-time: move+link a project's/global
+                                      wiki into ~/.mmm (a worktree/second clone of an already-
+                                      initialized remote shares that wiki; --merge only if it grew
+                                      its own; --domain forces membership, repeatable)
+  mmm init --domain <name> [root] [--from host/owner]...   create/sync a domain: a cross-cutting
+                                      wiki tier woven into every project whose git host+owner is
+                                      in --from (many-to-many with other domains). No --from yet?
+                                      lists the host/owner groups found under root instead of
+                                      guessing. A rootless domain is a pure aspect: no on-disk
+                                      wiki, join projects one at a time with 'init <path> --domain'
   mmm doctor                         full health check (links, index, secrets, git-ignore)
   mmm rebalance                      move each project's CLAUDE.md and Claude Code auto memory into the
                                       store, leave symlinks behind (runs automatically before pack)
   mmm forget <key>                   drop a registered project (fixes a stale/absent entry)
-  mmm pack [--project k1,k2] [--out f] [--no-global]   encrypted archive of ~/.mmm
+  mmm pack [--project k1,k2] [--domain d1,d2] [--out f] [--no-global]   encrypted archive of ~/.mmm
   mmm unpack <archive> [--into dir]  extract an archive, then link global + every project found here
   mmm query|q "<term>" [--project k] [--global-only] [--json]   instant, no LLM
   mmm ask|a [--save] "<question>"    one cheap claude -p call, scoped to query's hits

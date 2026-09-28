@@ -21,7 +21,8 @@ process.stdin.on('end', () => {
   const totalPages = countMdFiles(mmmData);
   const lines = [`[mmm: ${totalPages} pages at ~/.mmm]`];
 
-  const projectKey = resolveProjectKey(cwd, mmmData);
+  const project = resolveProject(cwd, mmmData);
+  const projectKey = project?.key ?? null;
   if (projectKey) {
     // ensure_claude_md (bin/mmm) leaves this marker instead of blocking init on a non-interactive
     // claude -p /init that has no approval channel -- this session IS the interactive one it was
@@ -37,6 +38,9 @@ process.stdin.on('end', () => {
       const items = [...readFileSync(tasksPath, 'utf8').matchAll(/^- \[ \] (.+)$/gm)].map((m) => m[1]);
       lines.push(`${projectKey}: ${items.length} open task(s)`);
       for (const t of items.slice(0, 5)) lines.push(`  - ${truncate(t, 90)}`);
+    }
+    if (project.domains.length) {
+      lines.push(`domains: ${project.domains.map((d) => `${d} -> ~/.mmm/domains/${d}/index.md`).join(', ')}`);
     }
     lines.push(`See ~/.mmm/projects/${projectKey}/index.md`);
   } else {
@@ -69,13 +73,15 @@ function countMdFiles(dir) {
   return n;
 }
 
-function resolveProjectKey(cwd, mmmData) {
+// returns { key, domains } so the brief can point at both this project's wiki and any domain
+// tiers woven into it (many-to-many: a project can carry more than one)
+function resolveProject(cwd, mmmData) {
   try {
     const remote = execSync('git remote get-url origin', { cwd, stdio: ['ignore', 'pipe', 'ignore'] })
       .toString().trim();
     const registry = JSON.parse(readFileSync(join(mmmData, 'registry.json'), 'utf8'));
     for (const [key, info] of Object.entries(registry.projects || {})) {
-      if (info.remote === remote) return key;
+      if (info.remote === remote) return { key, domains: info.domains || [] };
     }
   } catch { /* not a git repo, or no matching registry entry */ }
   return null;

@@ -97,6 +97,11 @@ def is_under(path: Path, dirname: str) -> bool:
 
 def tiers(root: Path):
     yield "global", root / "global"
+    domains = root / "domains"
+    if domains.is_dir():
+        for d in sorted(domains.iterdir()):
+            if d.is_dir():
+                yield d.name, d
     projects = root / "projects"
     if projects.is_dir():
         for d in sorted(projects.iterdir()):

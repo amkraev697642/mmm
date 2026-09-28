@@ -59,6 +59,7 @@ def main() -> int:
     ap.add_argument("mmm_home")
     ap.add_argument("terms", nargs="+", help="one term, or several bare words = must all appear (AND)")
     ap.add_argument("--project")
+    ap.add_argument("--domain")
     ap.add_argument("--global-only", action="store_true")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
@@ -67,10 +68,22 @@ def main() -> int:
     global_dir = root / "global"
     if args.global_only:
         dirs = [global_dir]
+    elif args.domain:
+        dirs = [global_dir, root / "domains" / args.domain]
     elif args.project:
-        dirs = [global_dir, root / "projects" / args.project]
+        dirs = [global_dir]
+        try:
+            registry = json.loads((root / "registry.json").read_text())
+            for d in registry.get("projects", {}).get(args.project, {}).get("domains", []):
+                dirs.append(root / "domains" / d)
+        except (OSError, json.JSONDecodeError):
+            pass
+        dirs.append(root / "projects" / args.project)
     else:
         dirs = [global_dir]
+        domains_root = root / "domains"
+        if domains_root.is_dir():
+            dirs += sorted(p for p in domains_root.iterdir() if p.is_dir())
         proj_root = root / "projects"
         if proj_root.is_dir():
             dirs += sorted(p for p in proj_root.iterdir() if p.is_dir())
@@ -109,7 +122,14 @@ def main() -> int:
             "snippets": [s for _, s in body_snippets[:3]],
         })
 
-    results.sort(key=lambda r: (-r["score"], 0 if str(global_dir) in r["file"] else 1, r["file"]))
+    def tier_rank(path: str) -> int:
+        if str(global_dir) in path:
+            return 0
+        if str(root / "domains") in path:
+            return 1
+        return 2
+
+    results.sort(key=lambda r: (-r["score"], tier_rank(r["file"]), r["file"]))
 
     if args.json:
         print(json.dumps(results, indent=2))

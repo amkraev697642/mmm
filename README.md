@@ -25,9 +25,11 @@ See [docs/setup.md](docs/setup.md) — including how to turn `~/mmm` into a fork
 ## What it is
 
 A knowledge base for you and your AI coding agent (Claude Code, Cursor) — a global wiki
-(things true across every project) plus each project's own (its tasks, architecture,
-incident history). Symlinked into the `~/.omc/wiki` / `<repo>/.omc/wiki` paths your agent
-already reads and writes (an oh-my-claudecode convention — mmm works standalone, without it).
+(things true across every project), an optional **domain** wiki per cross-cutting concern
+(things true across every project of one aspect — say `video` or `developer-advocate` — but not
+the rest), and each project's own (its tasks, architecture, incident history). Symlinked into the
+`~/.omc/wiki` / `<repo>/.omc/wiki` paths your agent already reads and writes (an oh-my-claudecode
+convention — mmm works standalone, without it).
 
 Plain markdown with a small YAML header. No vector database, no server, no account, no
 lock-in. Two roots, deliberately: **`~/mmm`** (no dot) is the tool — safe to publish or fork,
@@ -38,6 +40,8 @@ no data in it. **`~/.mmm`** (dotted) is your actual content — `mmm pack` only 
 ```
 mmm unpack mmm-2026-09.7z   # got handed one? extract + link global and every project found here
 mmm init .                  # link this project into the store (repeat per project)
+mmm init --domain video ~/work --from gitlab.example.com/team   # a cross-cutting wiki tier for
+                             # every repo under ~/work whose git host+owner matches --from
 mmm rebalance               # keep every project's CLAUDE.md and auto memory in the store (pack runs it)
 mmm q "some term"           # instant, free, no model call
 mmm a "a real question"     # one cheap model call, scoped only to query's hits

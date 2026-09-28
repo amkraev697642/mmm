@@ -22,7 +22,11 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
   logic (`init_one`), plus `link_claude_md` (`init` and `rebalance`): a project's `CLAUDE.md`
   lives in the store, the repo gets a git-ignored symlink; and `link_auto_memory` (same two
   commands): Claude Code's machine-local auto memory dir moves to `projects/<key>/memory`, a
-  symlink left in its place. Requires `jq`, `git`, `rsync`, `python3`, `rg` on `PATH`.
+  symlink left in its place. A **domain** (`cmd_init_domain`, `host_owner`) is a third,
+  cross-cutting tier between global and project — an AOP-style aspect whose pointcut is a list
+  of `host/owner` strings (`sources`) rather than a folder, woven into every matching project
+  (many-to-many: `registry.json`'s `projects[k].domains` is an array). Requires `jq`, `git`,
+  `rsync`, `python3`, `rg` on `PATH`.
 - **`bin/mmm-query.py`** / **`bin/mmm-doctor.py`** / **`bin/mmm-links.py`** — stdlib-only Python 3 (no pip installs).
   `mmm-query.py` is `rg --json` with wiki-structure awareness (frontmatter hits ranked over
   body hits, results grouped by page). `mmm-doctor.py` does structural checks: broken
@@ -72,6 +76,11 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
   worktree/clone of an already-registered remote shares that project's wiki (one project, one
   wiki); `mmm init --merge` is required if it grew independent content, to avoid silently
   clobbering same-named files.
+- **A domain's root is an optional, per-machine hint**, like `pathHint` — `registry.json`'s
+  `domains[d].sources` (the `host/owner` pointcut) is what's portable. A domain matches only its
+  own `sources`, never host alone: a folder can hold both your org's repos and third-party
+  clones on the same host, and the first `mmm init --domain` with no `--from` lists the
+  `host/owner` groups found instead of guessing which ones are yours.
 - **`mmm doctor` is the only enforced gate** — nothing about wiki content is enforced on
   commits; `pack` runs the full doctor battery first and refuses to write an archive if it
   fails.

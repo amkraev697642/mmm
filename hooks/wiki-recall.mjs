@@ -30,9 +30,11 @@ function run(data) {
   const root = git('rev-parse --show-toplevel', dirname(file));
   if (!root) return done();
   const rel = relative(root, file);
-  const key = projectKey(git('remote get-url origin', root));
+  const remote = git('remote get-url origin', root);
+  const key = projectKey(remote);
 
   const tiers = [join(mmmData, 'global')];
+  for (const d of projectDomains(remote)) tiers.push(join(mmmData, 'domains', d));
   if (key) tiers.push(join(mmmData, 'projects', key));
 
   const state = loadState(data.session_id);
@@ -65,6 +67,17 @@ function projectKey(remote) {
     for (const [key, info] of Object.entries(registry.projects || {})) if (info.remote === remote) return key;
   } catch { /* no registry yet */ }
   return null;
+}
+
+function projectDomains(remote) {
+  if (!remote) return [];
+  try {
+    const registry = JSON.parse(readFileSync(join(mmmData, 'registry.json'), 'utf8'));
+    for (const info of Object.values(registry.projects || {})) {
+      if (info.remote === remote) return info.domains || [];
+    }
+  } catch { /* no registry yet */ }
+  return [];
 }
 
 // memory/ is Claude Code's auto memory, which has no applies_to/sources of its own
