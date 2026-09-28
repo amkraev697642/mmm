@@ -6,9 +6,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-T=$(mktemp -d)
-trap 'rm -rf "$T"' EXIT
-export GIT_CONFIG_NOSYSTEM=1
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"   # $T, mkbin(), stub_brew()
 command -v 7z >/dev/null || { echo "SKIP: needs 7z for the seed case"; exit 0; }
 
 fail=0
@@ -19,24 +17,8 @@ rsync -a --exclude .git "$ROOT"/ "$T/src/"
 git -C "$T/src" init -q && git -C "$T/src" add -A
 git -C "$T/src" -c user.name=t -c user.email=t@t commit -qm test
 
-# a PATH with the named commands hidden, plus a brew that only logs its args
-mkbin() {
-  local d="$T/$1" p f n h skip; shift
-  mkdir -p "$d"
-  IFS=: read -ra dirs <<< "$PATH"
-  for p in "${dirs[@]}"; do
-    [ -d "$p" ] || continue
-    for f in "$p"/*; do
-      n=$(basename "$f"); skip=0
-      for h in brew "$@"; do [ "$n" = "$h" ] && skip=1; done
-      [ "$skip" = 0 ] && [ -x "$f" ] && [ ! -e "$d/$n" ] && ln -s "$f" "$d/$n"
-    done
-  done
-  printf '#!/bin/sh\necho "brew $*" >> "$HOME/brew.log"\n' > "$d/brew"
-  chmod +x "$d/brew"
-}
-mkbin nodeps jq node claude
-mkbin withdeps claude
+mkbin nodeps brew jq node claude; stub_brew nodeps
+mkbin withdeps brew claude; stub_brew withdeps
 mkdir -p "$T/nobrew"; for f in sh git; do ln -s "$(command -v $f)" "$T/nobrew/$f"; done
 
 # run <home> <bindir> <feeder-fn> [VAR=val ...]: install.sh in a pty, keystrokes from the feeder
@@ -113,5 +95,37 @@ printf 'test\n' | HOME="$M" PATH="$T/withdeps" "$ROOT/bin/mmm" unpack "$H/seed.7
 check "local project kept" 'jq -e ".projects.mine" "$M/.mmm/registry.json" >/dev/null'
 check "archive projects added" 'jq -e ".projects.proj and .projects.gone" "$M/.mmm/registry.json" >/dev/null'
 check "searchRoots kept" '[ "$(jq -r ".searchRoots[0]" "$M/.mmm/registry.json")" = "~/code" ]'
+
+echo "-- domain delivery: a real 'mmm pack --domain' archive, unpacked through the installer --"
+# hand-built store (like the seed archive above), but shaped as a delivery: a rootless domain
+# (the common "hand this to a colleague" case -- see developer-advocate in the real rollout) with
+# one member project and one project deliberately left OUT, to prove --domain really excludes it
+S2="$T/store2"; mkdir -p "$S2/global" "$S2/domains/delivery-test" "$S2/projects/member" "$S2/projects/outsider"
+printf '# Wiki Index\n\n' > "$S2/global/index.md"
+printf '# Wiki Index\n\n- [[note]]\n' > "$S2/domains/delivery-test/index.md"
+printf -- '---\ntitle: Note\ncategory: test\ntags: [delivery]\nupdated: 2026-09-28\n---\ndelivery-test only\n' \
+  > "$S2/domains/delivery-test/note.md"
+printf '# Wiki Index\n\n' > "$S2/projects/member/index.md"
+printf '# Wiki Index\n\n' > "$S2/projects/outsider/index.md"
+printf '{"searchRoots":[],"domains":{"delivery-test":{"sources":[]}},"projects":{"member":{"remote":"https://example.com/member.git","pathHint":"/nowhere/member","domains":["delivery-test"]},"outsider":{"remote":"https://example.com/outsider.git","pathHint":"/nowhere/outsider"}}}\n' \
+  > "$S2/registry.json"
+
+H6="$T/h6"; mkdir -p "$H6"
+# a throwaway HOME for the pack step itself: cmd_status's global check compares against the real
+# $HOME/.omc/wiki, not MMM_HOME-relative, so packing from the ambient dev HOME would pick up
+# whatever's really linked there instead of this hand-built store
+HOME="$T/store2home" MMM_HOME="$S2" "$ROOT/bin/mmm" pack --domain delivery-test --out "$H6/domain-seed.7z" < /dev/null \
+  > "$S2/pack.out" 2>&1 || { cat "$S2/pack.out"; echo "FAIL: mmm pack --domain (setup)"; fail=1; }
+check "pack wrote a real archive" '[ -s "$H6/domain-seed.7z" ]'
+
+# same feeder shape as feed_seed above, empty password instead of 'test' (packed with none)
+feed_domain_seed() { S 1; printf '~/domain-seed.7z\n'; S 1; printf '\n'; S 3; printf 'n\n'; S 4; printf '\n'; S 6; }
+run h6 withdeps feed_domain_seed
+check "domain page landed in the store" '[ -f "$H6/.mmm/domains/delivery-test/note.md" ]'
+check "member project registered" 'jq -e ".projects.member" "$H6/.mmm/registry.json" >/dev/null'
+check "member project (not checked out here) gets a clone hint" \
+  'grep -q "member: not on this machine" "$H6/out"'
+check "project outside the domain never shipped" '! jq -e ".projects.outsider" "$H6/.mmm/registry.json" >/dev/null 2>&1'
+check "doctor clear on the delivered store" 'PATH="$T/withdeps" HOME="$H6" "$H6/mmm/bin/mmm" doctor 2>&1 | grep -q "ALL CLEAR"'
 
 [ "$fail" = 0 ] && echo "install test: ALL PASS" || { echo "install test: FAILURES"; exit 1; }

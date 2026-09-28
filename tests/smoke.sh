@@ -4,40 +4,28 @@
 set -euo pipefail
 
 MMM="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/bin/mmm"
-T=$(mktemp -d)
-trap 'rm -rf "$T"' EXIT
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"   # $T, mkbin()
 
 # init refuses to register a repo under $TMPDIR (looks ephemeral), so the fake HOME must sit
 # outside the TMPDIR mmm sees, even though both live under the real tmp dir
 export HOME="$T/home" TMPDIR="$T/tmp"
 unset MMM_HOME
 mkdir -p "$HOME" "$TMPDIR"
-export GIT_CONFIG_NOSYSTEM=1
 
 # a PATH with rsync, 7z and claude hidden: proves the commands that don't use them no longer
 # require them, and guarantees nothing here ever reaches a real claude call
-NODEPS="$T/nodeps-bin"
-mkdir -p "$NODEPS"
-IFS=: read -ra path_dirs <<< "$PATH"
-for d in "${path_dirs[@]}"; do
-  [ -d "$d" ] || continue
-  for f in "$d"/*; do
-    name=$(basename "$f")
-    case "$name" in rsync|7z|claude) continue ;; esac
-    [ -x "$f" ] && [ ! -e "$NODEPS/$name" ] && ln -s "$f" "$NODEPS/$name"
-  done
-done
+mkbin nodeps rsync 7z claude
 
 pass=0
 ok() { pass=$((pass + 1)); echo "ok $pass - $*"; }
 fail() { echo "FAIL - $*" >&2; exit 1; }
-nodeps() { PATH="$NODEPS" "$MMM" "$@"; }
+nodeps() { PATH="$T/nodeps" "$MMM" "$@"; }
 
 nodeps status >/dev/null || fail "status without rsync/7z/claude"
 [ -f "$HOME/.mmm/registry.json" ] || fail "first run did not create the registry"
 ok "status runs without rsync/7z/claude and bootstraps the registry"
 
-if PATH="$NODEPS" "$MMM" init --global 2>"$T/err"; then
+if PATH="$T/nodeps" "$MMM" init --global 2>"$T/err"; then
   fail "init should refuse to run without rsync"
 fi
 grep -q "requires 'rsync'" "$T/err" || fail "init without rsync gave no install hint: $(cat "$T/err")"
@@ -118,6 +106,39 @@ if command -v node >/dev/null 2>&1; then
   grep '"id":1' "$T/mcp.out" | grep -q "Linker" || fail "MCP mmm_read did not return the page"
   grep '"id":2' "$T/mcp.out" | grep -q "escapes" || fail "MCP server let a path escape ~/.mmm"
   ok "MCP server reads pages and refuses paths outside ~/.mmm"
+fi
+
+if command -v rsync >/dev/null 2>&1 && command -v 7z >/dev/null 2>&1; then
+  # a second project that stays OUT of the domain -- proves --domain doesn't ship everything
+  other="$HOME/src/other"; mkdir -p "$other"
+  git -C "$other" init -q
+  git -C "$other" remote add origin https://example.invalid/other.git
+  printf '# other\n' > "$other/CLAUDE.md"
+  "$MMM" init "$other" >/dev/null
+  "$MMM" init --domain zzz "$HOME/other-root" >/dev/null   # domain root, no --from: nothing auto-adopted
+  "$MMM" init "$proj" --domain zzz >/dev/null               # $proj ("demo") explicitly joins zzz
+  printf -- '---\ntitle: Domain note\ncategory: test\ntags: [smoke]\nupdated: 2026-01-01\n---\nzzz-only fact\n' \
+    > "$HOME/.mmm/domains/zzz/note.md"
+  printf '\n- [[note]]\n' >> "$HOME/.mmm/domains/zzz/index.md"
+
+  packout="$T/domain.7z"
+  "$MMM" pack --domain zzz --out "$packout" < /dev/null >"$T/pack.out" 2>&1 \
+    || { cat "$T/pack.out"; fail "mmm pack --domain zzz"; }
+  ok "pack --domain zzz (empty password) writes an archive"
+
+  extract="$T/domain-extract"; mkdir -p "$extract"
+  7z x -p"" "$packout" -o"$extract" >/dev/null 2>&1 || fail "packed archive did not open with an empty password"
+  [ -f "$extract/domains/zzz/note.md" ] || fail "packed archive missing the domain's own page"
+  [ -f "$extract/global/index.md" ] || fail "packed archive should ship global by default"
+  [ -d "$extract/projects/demo" ] || fail "packed archive missing the domain's member project"
+  [ ! -e "$extract/projects/other" ] || fail "packed archive leaked a project outside the domain"
+  jq -e '(.domains | keys) == ["zzz"]' "$extract/registry.json" >/dev/null \
+    || fail "packed registry should list only the zzz domain: $(cat "$extract/registry.json")"
+  jq -e '(.projects | keys) == ["demo"]' "$extract/registry.json" >/dev/null \
+    || fail "packed registry leaked a project outside the domain: $(cat "$extract/registry.json")"
+  ok "pack --domain zzz ships only that domain's wiki + members + global, registry trimmed to match"
+else
+  echo "skip - pack --domain (needs rsync + 7z)"
 fi
 
 echo "smoke: all $pass checks passed"
