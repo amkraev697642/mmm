@@ -141,4 +141,53 @@ else
   echo "skip - pack --domain (needs rsync + 7z)"
 fi
 
+if command -v rsync >/dev/null 2>&1 && command -v 7z >/dev/null 2>&1 && command -v rg >/dev/null 2>&1; then
+  # two machines syncing through a bare repo: push/pull merges instead of overwriting
+  remote="$T/remote.git"; git init -q --bare "$remote"
+  mA() { HOME="$T/a" MMM_SYNC_DIR="$T/a-sync" MMM_PASSWORD=pw "$MMM" "$@"; }
+  mB() { HOME="$T/b" MMM_SYNC_DIR="$T/b-sync" MMM_PASSWORD=pw "$MMM" "$@"; }
+  mkdir -p "$T/a" "$T/b"
+  page() { printf -- '---\ntitle: %s\ncategory: test\ntags: [sync]\nupdated: 2026-01-01\n---\n# %s\n\n%s\n' "$1" "$1" "$2"; }
+  mA init --global >/dev/null
+  { page one "l1
+l2
+l3
+l4
+l5
+l6
+l7"; printf '\n- [[one]]\n'; } > "$T/a/.mmm/global/one.md"
+  printf '\n- [[one]]\n' >> "$T/a/.mmm/global/index.md"
+  mA push "$remote" >"$T/sync.out" 2>&1 || { cat "$T/sync.out"; fail "A push"; }
+  mB pull "$remote" >"$T/sync.out" 2>&1 || { cat "$T/sync.out"; fail "B first pull"; }
+  [ -f "$T/b/.mmm/global/one.md" ] || fail "B did not receive A's page"
+  ok "push then pull on a fresh machine carries the page"
+
+  sed -i.bak 's/^l1$/l1-from-a/' "$T/a/.mmm/global/one.md"; rm "$T/a/.mmm/global/one.md.bak"
+  page anew a > "$T/a/.mmm/global/a-new.md"; printf '\n- [[a-new]]\n' >> "$T/a/.mmm/global/index.md"
+  sed -i.bak 's/^l7$/l7-from-b/' "$T/b/.mmm/global/one.md"; rm "$T/b/.mmm/global/one.md.bak"
+  page bnew b > "$T/b/.mmm/global/b-new.md"; printf '\n- [[b-new]]\n' >> "$T/b/.mmm/global/index.md"
+  mA push >"$T/sync.out" 2>&1 || { cat "$T/sync.out"; fail "A second push"; }
+  if mB push >"$T/sync.out" 2>&1; then fail "B push should refuse while the remote is ahead"; fi
+  grep -q "pull" "$T/sync.out" || fail "B's refused push did not say to pull"
+  mB pull >"$T/sync.out" 2>&1 || { cat "$T/sync.out"; fail "B merge pull"; }
+  grep -q "l1-from-a" "$T/b/.mmm/global/one.md" && grep -q "l7-from-b" "$T/b/.mmm/global/one.md" \
+    || fail "merge lost one side's edit"
+  [ -f "$T/b/.mmm/global/a-new.md" ] && [ -f "$T/b/.mmm/global/b-new.md" ] || fail "merge lost a new page"
+  mB push >"$T/sync.out" 2>&1 || { cat "$T/sync.out"; fail "B push after merge"; }
+  mA pull >"$T/sync.out" 2>&1 || { cat "$T/sync.out"; fail "A pull"; }
+  [ -f "$T/a/.mmm/global/b-new.md" ] || fail "A did not receive B's page"
+  ok "edits to different lines and new pages on two machines merge without loss"
+
+  sed -i.bak 's/^l4$/l4-from-a/' "$T/a/.mmm/global/one.md"; rm "$T/a/.mmm/global/one.md.bak"
+  sed -i.bak 's/^l4$/l4-from-b/' "$T/b/.mmm/global/one.md"; rm "$T/b/.mmm/global/one.md.bak"
+  mA push >/dev/null 2>&1 || fail "A push before conflict"
+  if mB pull >"$T/sync.out" 2>&1; then fail "conflicting pull should exit non-zero"; fi
+  grep -q '^<<<<<<<' "$T/b/.mmm/global/one.md" || fail "conflict markers missing"
+  if mB doctor >/dev/null 2>&1; then fail "doctor should fail on conflict markers"; fi
+  if mB push >/dev/null 2>&1; then fail "push should refuse with an unresolved merge"; fi
+  ok "a same-line conflict leaves markers, fails doctor and blocks push"
+else
+  echo "skip - push/pull (needs rsync + 7z + rg)"
+fi
+
 echo "smoke: all $pass checks passed"

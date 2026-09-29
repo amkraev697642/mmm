@@ -27,6 +27,9 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
   of `host/owner` strings (`sources`) rather than a folder, woven into every matching project
   (many-to-many: `registry.json`'s `projects[k].domains` is an array). Requires `jq`, `git`,
   `rsync`, `python3`, `rg` on `PATH`.
+  `push`/`pull` sync through a git repo holding one encrypted `mmm.7z` (clone in `~/.mmm-sync`, outside
+  the store): pull builds a "remote" commit from the archive, 3-way merges it against the `mmm-synced`
+  branch, and merges `registry.json` by jq instead (per-machine paths). `~/.mmm` itself is still never pushed.
 - **`bin/mmm-query.py`** / **`bin/mmm-doctor.py`** / **`bin/mmm-links.py`** — stdlib-only Python 3 (no pip installs).
   `mmm-query.py` is `rg --json` with wiki-structure awareness (frontmatter hits ranked over
   body hits, results grouped by page). `mmm-doctor.py` does structural checks: broken

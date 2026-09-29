@@ -551,6 +551,11 @@ cmd_doctor() {
   else
     echo "PASS: no credential-shaped strings in *.md/*.json"
   fi
+  if rg -n --no-heading --hidden --glob '*.md' --glob '!.git' '^(<<<<<<<|>>>>>>>) ' "$MMM_HOME" 2>/dev/null; then
+    echo "FAIL: unresolved merge conflict markers found above"; fail=1
+  else
+    echo "PASS: no merge conflict markers"
+  fi
   echo "-- git-ignore --"
   local k path
   for k in $(jq -r '.projects | keys[]' "$REGISTRY"); do
@@ -662,6 +667,7 @@ cmd_pack() {
     registry_src="$registry_tmpdir/registry.json"
   else
     [ -d "$MMM_HOME/projects" ] && args+=(projects)
+    [ -d "$MMM_HOME/domains" ] && args+=(domains)
   fi
 
   # trim to the selected domains: drop every other domain's entry, and drop every shipped
@@ -682,11 +688,45 @@ cmd_pack() {
   # -mhe=on (header encryption) is 7z-format-only; 7z rejects it with E_INVALIDARG for any
   # other archive type, so a .zip --out just drops it and relies on -p's own zip encryption.
   # -mem=AES256 is not a recognized switch on this p7zip build and made every `mmm pack` fail.
-  local enc_args=(-p)
+  # MMM_PASSWORD (set by push) skips 7z's own prompt
+  local enc_args=(-p"${MMM_PASSWORD:-}")
   case "$out" in *.7z|*.7Z) enc_args+=(-mhe=on) ;; esac
   ( cd "$MMM_HOME" && 7z a -mx=9 "${enc_args[@]}" "$out" "$registry_src" "${args[@]}" )
   [ -n "$registry_tmpdir" ] && rm -rf "$registry_tmpdir"
   echo "mmm: wrote $out"
+}
+
+# an archive is only useful once linked -- shared by unpack and pull
+link_all() {
+  # the init a receiver would otherwise piece together from the README. Subshells: one project's/domain's refusal mustn't stop the rest.
+  echo "-- linking --"
+  ( cmd_init --global ) || true
+  local d
+  for d in $(jq -r '.domains // {} | keys[]' "$REGISTRY"); do
+    # --no-clone: unpack only links what's already on disk, same as the project loop below --
+    # cloning a domain's missing members is a deliberate, separate 'mmm init --domain d'
+    ( cmd_init --domain "$d" --no-clone ) || true
+  done
+  local k path remote
+  for k in $(jq -r '.projects | keys[]' "$REGISTRY"); do
+    if path=$(resolve_path "$k"); then
+      ( cmd_init "$path" ) || true
+    else
+      remote=$(jq -r --arg k "$k" '.projects[$k].remote' "$REGISTRY")
+      echo "  $k: not on this machine — git clone $remote, then 'mmm init <path>'"
+    fi
+  done
+  for d in $(jq -r '.domains // {} | keys[]' "$REGISTRY"); do
+    local root missing
+    root=$(jq -r --arg d "$d" '.domains[$d].root // empty' "$REGISTRY")
+    [ -n "$root" ] || continue
+    missing=0
+    local pk
+    for pk in $(jq -r --arg d "$d" '.projects | to_entries[] | select(.value.domains // [] | index($d)) | .key' "$REGISTRY"); do
+      resolve_path "$pk" >/dev/null 2>&1 || missing=$((missing + 1))
+    done
+    [ "$missing" -gt 0 ] && echo "  $d: $missing member(s) missing — 'mmm init --domain $d' clones them into $(expand_tilde "$root")"
+  done
 }
 
 cmd_unpack() {
@@ -719,36 +759,7 @@ cmd_unpack() {
     echo "mmm: the archive changed these files (review with 'mmm git diff', undo one with 'mmm git checkout -- <file>'):"
     store_git status --short
   fi
-  # an archive is only useful once linked -- do the init a receiver would otherwise have to
-  # piece together from the README. Subshells: one project's/domain's refusal mustn't stop the rest.
-  echo "-- linking --"
-  ( cmd_init --global ) || true
-  local d
-  for d in $(jq -r '.domains // {} | keys[]' "$REGISTRY"); do
-    # --no-clone: unpack only links what's already on disk, same as the project loop below --
-    # cloning a domain's missing members is a deliberate, separate 'mmm init --domain d'
-    ( cmd_init --domain "$d" --no-clone ) || true
-  done
-  local k path remote
-  for k in $(jq -r '.projects | keys[]' "$REGISTRY"); do
-    if path=$(resolve_path "$k"); then
-      ( cmd_init "$path" ) || true
-    else
-      remote=$(jq -r --arg k "$k" '.projects[$k].remote' "$REGISTRY")
-      echo "  $k: not on this machine — git clone $remote, then 'mmm init <path>'"
-    fi
-  done
-  for d in $(jq -r '.domains // {} | keys[]' "$REGISTRY"); do
-    local root missing
-    root=$(jq -r --arg d "$d" '.domains[$d].root // empty' "$REGISTRY")
-    [ -n "$root" ] || continue
-    missing=0
-    local pk
-    for pk in $(jq -r --arg d "$d" '.projects | to_entries[] | select(.value.domains // [] | index($d)) | .key' "$REGISTRY"); do
-      resolve_path "$pk" >/dev/null 2>&1 || missing=$((missing + 1))
-    done
-    [ "$missing" -gt 0 ] && echo "  $d: $missing member(s) missing — 'mmm init --domain $d' clones them into $(expand_tilde "$root")"
-  done
+  link_all
 }
 
 # --- query / ask ---------------------------------------------------------
@@ -845,6 +856,100 @@ you changed at the end ('mmm git diff' shows it). Then run 'mmm doctor' and fix 
 }
 
 # --- dispatch ----------------------------------------------------------------
+# --- push / pull: an encrypted archive in a private git repo, merged 3-way on pull ---------
+# the sync clone lives outside ~/.mmm so the store's `git add -A` never sees a nested repo.
+# `mmm-synced` is the store commit last exchanged with the remote -- pull's merge base.
+sync_prepare() {
+  need git 7z jq
+  SYNC_DIR="${MMM_SYNC_DIR:-$HOME/.mmm-sync}"
+  local url=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --password) MMM_PASSWORD="$2"; shift 2 ;;
+      -*) die "unknown option: $1" ;;
+      *) url="$1"; shift ;;
+    esac
+  done
+  if [ ! -d "$SYNC_DIR/.git" ]; then
+    [ -n "$url" ] || die "first push/pull needs the repo URL: mmm push <url>"
+    git clone -q "$url" "$SYNC_DIR"
+  fi
+  if [ -z "${MMM_PASSWORD:-}" ]; then
+    read -rsp "mmm: archive password: " MMM_PASSWORD < /dev/tty; echo
+  fi
+  [ -n "$MMM_PASSWORD" ] || die "an empty password would leave the archive unencrypted"
+  export MMM_PASSWORD
+}
+
+cmd_push() {
+  sync_prepare "$@"
+  [ ! -f "$MMM_HOME/.git/MERGE_HEAD" ] || die "a pull merge is unresolved -- fix the conflicts in $MMM_HOME, 'mmm git commit', then push"
+  git -C "$SYNC_DIR" fetch -q
+  if git -C "$SYNC_DIR" rev-parse -q --verify '@{u}' >/dev/null \
+      && [ "$(git -C "$SYNC_DIR" rev-list --count 'HEAD..@{u}')" != 0 ]; then
+    die "the remote has newer knowledge -- 'mmm pull' first"
+  fi
+  # 7z 'a' updates an existing archive in place and would keep pages deleted since the last push
+  rm -f "$SYNC_DIR/mmm.7z"
+  cmd_pack --out "$SYNC_DIR/mmm.7z"
+  git -C "$SYNC_DIR" add mmm.7z
+  git -C "$SYNC_DIR" -c user.name=mmm -c user.email=mmm@localhost commit -q -m "mmm: push from $(hostname -s)"
+  git -C "$SYNC_DIR" push -q -u origin HEAD
+  store_git branch -f mmm-synced HEAD
+  echo "mmm: pushed"
+}
+
+cmd_pull() {
+  sync_prepare "$@"
+  git -C "$SYNC_DIR" pull -q --ff-only
+  [ -f "$SYNC_DIR/mmm.7z" ] || die "no mmm.7z in the remote yet -- 'mmm push' from a machine that has knowledge"
+  # two machines appending to the same index/log/task list is the common conflict, and keeping
+  # both sides' lines is always right there
+  local attr="$MMM_HOME/.gitattributes" f
+  for f in index.md log.md tasks.md; do
+    grep -qxF "$f merge=union" "$attr" 2>/dev/null || echo "$f merge=union" >> "$attr"
+  done
+  snapshot "mmm: before pull"
+  local x; x=$(mktemp -d)
+  7z x -y -p"$MMM_PASSWORD" "$SYNC_DIR/mmm.7z" -o"$x" >/dev/null || { rm -rf "$x"; die "could not open the archive (wrong password?)"; }
+  # the remote side of the merge is HEAD with only the archive's paths swapped in (via a temp
+  # index, working tree untouched), so anything the archive doesn't ship is never a deletion.
+  # registry.json is merged by jq below instead: its pathHints/roots differ per machine and would
+  # conflict on every pull.
+  local paths=() p
+  for p in global projects domains claude; do
+    [ -e "$x/$p" ] && paths+=("$p")
+  done
+  local idx="$x.idx" tree commit base=""
+  GIT_INDEX_FILE="$idx" store_git read-tree HEAD
+  [ "${#paths[@]}" -gt 0 ] && GIT_INDEX_FILE="$idx" store_git --work-tree="$x" add -A -- "${paths[@]}"
+  tree=$(GIT_INDEX_FILE="$idx" store_git write-tree)
+  base=$(store_git rev-parse -q --verify mmm-synced || true)
+  commit=$(store_git commit-tree "$tree" ${base:+-p "$base"} -m "mmm: remote archive")
+  local merged=1
+  if [ -n "$base" ] && [ "$tree" = "$(store_git rev-parse "$base^{tree}")" ]; then
+    echo "mmm: the remote has nothing new"
+  else
+    # first pull has no shared base, so files differing on both sides surface as conflicts
+    local unrelated=(); [ -n "$base" ] || unrelated=(--allow-unrelated-histories)
+    store_git merge -q --no-edit "${unrelated[@]+"${unrelated[@]}"}" "$commit" >/dev/null 2>&1 || merged=0
+  fi
+  store_git branch -f mmm-synced "$commit"
+  local tmp; tmp=$(mktemp)
+  jq --slurpfile arch "$x/registry.json" '{searchRoots: ((.searchRoots // []) + ($arch[0].searchRoots // []) | unique),
+      domains: (($arch[0].domains // {}) + (.domains // {})),
+      projects: (($arch[0].projects // {}) + (.projects // {}))}' "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+  rm -rf "$x" "$idx"
+  echo "-- linking --"
+  link_all
+  if [ "$merged" = 0 ]; then
+    echo "mmm: conflicts in (fix, then 'mmm git commit' and 'mmm push' -- don't abort the merge):"
+    store_git diff --name-only --diff-filter=U
+    return 1
+  fi
+  echo "mmm: pulled"
+}
+
 usage() {
   echo "mmm $MMM_VERSION"
   cat <<'EOF'
@@ -867,6 +972,8 @@ usage:
   mmm forget <key>                   drop a registered project (fixes a stale/absent entry)
   mmm pack [--project k1,k2] [--domain d1,d2] [--out f] [--no-global]   encrypted archive of ~/.mmm
   mmm unpack <archive> [--into dir]  extract an archive, then link global + every project found here
+  mmm push [url] [--password p]      pack, then push the encrypted archive to a git repo (url only the first time)
+  mmm pull [url] [--password p]      fetch that archive and 3-way merge it into ~/.mmm (conflicts: fix, commit)
   mmm query|q "<term>" [--project k] [--global-only] [--json]   instant, no LLM
   mmm ask|a [--save] "<question>"    one cheap claude -p call, scoped to query's hits
                                       (--save appends the answer to this tier's log.md)
@@ -895,6 +1002,8 @@ case "$cmd" in
   forget) [ $# -ge 1 ] || die "usage: mmm forget <key>"; cmd_forget "$@" ;;
   pack) cmd_pack "$@" ;;
   unpack) [ $# -ge 1 ] || die "usage: mmm unpack <archive>"; cmd_unpack "$@" ;;
+  push) cmd_push "$@" ;;
+  pull) cmd_pull "$@" ;;
   query|q) cmd_query "$@" ;;
   ask|a) cmd_ask "$@" ;;
   links) cmd_links "$@" ;;
