@@ -273,7 +273,8 @@ if command -v jq >/dev/null 2>&1 && [ -f "$SETTINGS" ]; then
   TMP=$(mktemp)
   jq '.hooks.PostToolUse = ((.hooks.PostToolUse // []) + [{"matcher":"ExitPlanMode","hooks":[{"type":"command","command":"node ~/.claude/hooks/plan-tax-mark.mjs"}]},{"matcher":"Read|Edit|Write|MultiEdit","hooks":[{"type":"command","command":"node ~/.claude/hooks/wiki-recall.mjs"}]}] | unique_by(.matcher))
     | .hooks.Stop = ((.hooks.Stop // []) + [{"matcher":"*","hooks":[{"type":"command","command":"node ~/.claude/hooks/plan-tax-collect.mjs"}]}] | unique_by(.matcher))
-    | .hooks.SessionStart = ((.hooks.SessionStart // []) + [{"matcher":"*","hooks":[{"type":"command","command":"node ~/.claude/hooks/wiki-brief.mjs"}]}] | unique_by(.matcher))' \
+    | .hooks.SessionStart = ((.hooks.SessionStart // []) + [{"matcher":"*","hooks":[{"type":"command","command":"node ~/.claude/hooks/wiki-brief.mjs"}]}] | unique_by(.matcher))
+    | .hooks.SessionEnd = ((.hooks.SessionEnd // []) + [{"matcher":"*","hooks":[{"type":"command","command":"node ~/.claude/hooks/session-harvest.mjs"}]}] | unique_by(.matcher))' \
     "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
   echo "mmm: registered hooks in $SETTINGS -- see $TARGET/hooks/README.md for what each does"
 else

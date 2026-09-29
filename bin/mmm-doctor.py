@@ -30,6 +30,10 @@ EXEMPT_FROM_LINK_CHECK = {"plans"}
 # Claude Code's frontmatter (name/description/type) and link to memories that may not exist yet
 # on purpose, so none of the wiki-page rules apply to it
 NOT_WIKI_DIRS = {"memory"}
+# skills/: same situation as memory/ but only for frontmatter -- these are Claude Code skill
+# files (name/description/triggers), not wiki pages, but their [[links]] and length are still
+# real wiki concerns (already handled by EXEMPT_FROM_BUDGET above), so they stay in the link graph
+EXEMPT_FROM_FRONTMATTER = {"skills"}
 REQUIRED_FIELDS = ("title", "category", "tags", "updated")
 # tasks.md has its own two-section format in content-rules.md, no frontmatter
 NO_FRONTMATTER_NAMES = SKIP_NAMES | {"tasks.md"}
@@ -164,7 +168,7 @@ def main() -> int:
             n = text.count("\n") + 1
             if n > PAGE_BUDGET:
                 oversized.append((f, n))
-        if f.name not in NO_FRONTMATTER_NAMES:
+        if f.name not in NO_FRONTMATTER_NAMES and not any(is_under(f, d) for d in EXEMPT_FROM_FRONTMATTER):
             fm = meta[f]
             missing = [k for k in REQUIRED_FIELDS if not fm or not fm.get(k)]
             if missing:

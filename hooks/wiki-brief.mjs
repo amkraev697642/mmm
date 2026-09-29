@@ -40,6 +40,8 @@ process.stdin.on('end', () => {
       lines.push(`${projectKey}: ${items.length} open task(s)`);
       for (const t of items.slice(0, 5)) lines.push(`  - ${truncate(t, 90)}`);
     }
+    const noteCount = logEntryCount(join(mmmData, 'projects', projectKey, 'log.md'));
+    if (noteCount) lines.push(`${projectKey}: ${noteCount} session note(s) in log.md — 'mmm tidy'`);
     if (project.domains.length) {
       lines.push(`domains: ${project.domains.map((d) => `${d} -> ~/.mmm/domains/${d}/index.md`).join(', ')}`);
     }
@@ -90,4 +92,9 @@ function resolveProject(cwd, mmmData) {
 
 function truncate(s, n) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
+}
+
+function logEntryCount(logPath) {
+  try { return (readFileSync(logPath, 'utf8').match(/^## \[/gm) || []).length; }
+  catch { return 0; }
 }

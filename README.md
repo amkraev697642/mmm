@@ -63,6 +63,9 @@ What's actually automatic vs. what you (or your agent) still have to do:
 - **Automatic:** Claude Code's own auto memory (`~/.claude/projects/<dir>/memory`, normally
   stuck on one machine) is moved into `~/.mmm/projects/<key>/memory` by `init`/`rebalance`
   and symlinked back, so it travels with `pack` like everything else.
+- **Automatic:** a `SessionEnd` hook harvests durable findings into the tier's `log.md` and
+  reusable shell tricks into `global/terminal-fu/log.md` (one cheap haiku call, never blocks
+  session exit) — `mmm harvest [--since 30d]` backfills sessions from before the hook was on.
 - **Deterministic:** `mmm import some-notes.md` (reads, places, normalizes it) or just asking
   your agent to write a page — these are what actually grow the wiki.
 

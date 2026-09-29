@@ -919,10 +919,39 @@ Consolidate, don't expand:
   sources:) and fix or delete the stale claim; mark reversed decisions with superseded_by
 - turn relative dates ('yesterday', 'last week') into absolute ones
 - drop notes that are only true for a finished task, or that the code/CLAUDE.md already says
-- fold $tier/log.md entries worth keeping into the page they belong to
+- fold $tier/log.md entries worth keeping into the page they belong to (including '## [date]
+  session | ...' entries the session-harvest hook appends automatically at session end)
 - keep index.md one line per page and in sync with what exists; bump updated on pages you change
-Leave memory/ (Claude Code's own auto memory) alone. The store is snapshotted in git; list what
-you changed at the end ('mmm git diff' shows it). Then run 'mmm doctor' and fix what it flags."
+Leave memory/ (Claude Code's own auto memory) alone. If $MMM_HOME/global/terminal-fu/log.md has
+entries, fold the useful ones into topic pages there too (terminal-fu/git.md, terminal-fu/mobile.md,
+...), deduped, with frontmatter. The store is snapshotted in git; list what you changed at the end
+('mmm git diff' shows it). Then run 'mmm doctor' and fix what it flags."
+}
+
+# --- harvest -------------------------------------------------------------
+# backfill for the session-harvest SessionEnd hook: re-run it over transcripts it never saw
+# (installed after they happened, or the hook was off). Same script, same one-call-per-transcript
+# cost, just invoked directly instead of via the hook's stdin contract.
+cmd_harvest() {
+  need claude
+  local since="" days d
+  [ "${1:-}" = "--since" ] && { since="$2"; shift 2; }
+  days="${since%d}"
+  local cutoff=0
+  [ -n "$days" ] && cutoff=$(( $(date +%s) - days * 86400 ))
+  local f count=0 list=()
+  for f in "$HOME"/.claude/projects/*/*.jsonl; do
+    [ -f "$f" ] || continue
+    [ "$cutoff" -gt 0 ] && [ "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f")" -lt "$cutoff" ] && continue
+    list+=("$f"); count=$((count + 1))
+  done
+  [ "$count" -gt 0 ] || { echo "mmm: no transcripts found${since:+ in the last $since}"; return 0; }
+  printf "mmm: harvest %d transcript(s)${since:+ from the last $since}, one claude -p call each — proceed? [y/N] " "$count"
+  local ans; read -r ans; case "$ans" in y|Y|yes|Yes) ;; *) echo "mmm: skipped"; return 0 ;; esac
+  for f in "${list[@]}"; do
+    echo "mmm: harvesting $f"
+    node "$MMM_BIN/../hooks/session-harvest.mjs" --harvest "$f" "" || echo "  failed, skipping"
+  done
 }
 
 # --- dispatch ----------------------------------------------------------------
@@ -1053,6 +1082,7 @@ usage:
   mmm links <slug> | --orphans       backlinks/outlinks of a page, or pages nothing links to
   mmm import <file-or-folder>        interactive claude session: read, place, normalize into pages
   mmm tidy [--global|--project k]    interactive claude session: merge duplicates, drop stale facts
+  mmm harvest [--since 30d]          backfill: re-run the session-harvest hook over past transcripts
   mmm git <args>                     git inside ~/.mmm (log, diff, checkout) — snapshotted at every
                                       session start, before pack and before unpack
 EOF
@@ -1082,6 +1112,7 @@ case "$cmd" in
   ask|a) cmd_ask "$@" ;;
   links) cmd_links "$@" ;;
   tidy) cmd_tidy "$@" ;;
+  harvest) cmd_harvest "$@" ;;
   import) [ $# -ge 1 ] || die "usage: mmm import <file-or-folder>"; cmd_import "$@" ;;
   git) need git; store_git "$@" ;;
   -h|--help|help) usage ;;

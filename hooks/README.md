@@ -1,6 +1,6 @@
 # mmm hooks
 
-Four Claude Code hooks that make the wiki self-maintaining. `install.sh` symlinks these into
+Five Claude Code hooks that make the wiki self-maintaining. `install.sh` symlinks these into
 `~/.claude/hooks/` and registers them in `~/.claude/settings.json` automatically; this page is
 for manual setup (no `jq`, or a settings.json install.sh couldn't safely merge into).
 
@@ -15,6 +15,11 @@ for manual setup (no `jq`, or a settings.json install.sh couldn't safely merge i
 - **`wiki-recall.mjs`** (`PostToolUse`, matcher `Read|Edit|Write|MultiEdit`) — when a touched
   file matches a page's `applies_to:` globs or is cited in its `sources:`, injects a one-line
   pointer to that page. Each page at most once per session.
+- **`session-harvest.mjs`** (`SessionEnd`, matcher `*`) — one `claude -p --model haiku` call
+  (in a detached child, so it never blocks session exit) pulls durable findings into the
+  tier's `log.md` and reusable shell tricks into `global/terminal-fu/log.md`. Skips short
+  sessions (< 20 turns) and no-ops on the nested call's own SessionEnd (`MMM_HARVESTING=1`).
+  `mmm harvest [--since 30d]` backfills past transcripts the hook never saw.
 
 Manual registration — add to `~/.claude/settings.json`'s `hooks` key:
 
@@ -30,6 +35,9 @@ Manual registration — add to `~/.claude/settings.json`'s `hooks` key:
     ],
     "SessionStart": [
       {"matcher": "*", "hooks": [{"type": "command", "command": "node ~/.claude/hooks/wiki-brief.mjs"}]}
+    ],
+    "SessionEnd": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "node ~/.claude/hooks/session-harvest.mjs"}]}
     ]
   }
 }

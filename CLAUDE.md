@@ -51,6 +51,10 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
     just got approved (knowledge debt).
   - `plan-tax-collect.mjs` (`Stop`) — nags once if nothing under `~/.mmm` changed since the
     debt was marked ("paid" = any file mtime under `~/.mmm` newer than the mark).
+  - `session-harvest.mjs` (`SessionEnd`) — one detached `claude -p --model haiku` call
+    (`--harvest`, never blocks exit) harvests findings into the tier's `log.md` and shell
+    tricks into `global/terminal-fu/log.md`. `MMM_HARVESTING=1` stops the nested call's own
+    SessionEnd from recursing. `mmm harvest [--since 30d]` backfills past transcripts.
 - **`install.sh`** — POSIX `sh` on purpose (piped through `sh`, which is `dash` on many
   systems: no `set -o pipefail`, no arrays, no `[[`, no `local`). Refuses without `brew`. A
   keyboard/mouse setup screen (raw `stty` + `dd` byte reads, numbered `R<n>_*` vars in place of
@@ -89,7 +93,8 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
   `host/owner` groups found instead of guessing which ones are yours.
 - **`mmm doctor` is the only enforced gate** — nothing about wiki content is enforced on
   commits; `pack` runs the full doctor battery first and refuses to write an archive if it
-  fails.
+  fails. `pack --project`/`--domain` scopes which pages' FAIL/WARN block it to the shipped
+  tiers (`MMM_DOCTOR_SCOPE`), but `[[wikilink]]` resolution always runs whole-tree.
 - **`mmm ask`** reduces the natural-language question to an `rg` alternation pattern
   (stopword-filtered) before calling `mmm-query.py --json`, then pipes those excerpts into one
   scoped `claude -p` call — never a raw semantic search.
@@ -108,6 +113,10 @@ companion-plugin check. Run it after any change touching `bin/mmm`, `bin/mmm-*.p
 `content-rules.md`. There's no separate lint/build command — `bash -n bin/mmm` and
 `python3 -m py_compile bin/*.py` are reasonable syntax-only sanity checks before relying on
 `mmm doctor` for the rest.
+
+`hooks/*.mjs` have no automated test (`node --check` only). Verify by hand: throwaway `HOME`
+(hooks use `os.homedir()`, not `$MMM_HOME`), stub `claude` on `PATH` recording its prompt, feed
+stdin JSON.
 
 ## Working in this repo
 
