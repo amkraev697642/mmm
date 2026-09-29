@@ -358,29 +358,31 @@ apply_identity() {
   IFS='|' read -r name email <<<"$(identity_for "$key")"
   if [ "$name" = CONFLICT ]; then echo "  $key: WARN domains disagree on the git email ($email) -- identity not applied"; return 0; fi
   [ -n "$name$email" ] || return 0
-  identity_matches "$path" "$name" "" || { git -C "$path" config --local user.name "$name"; changed=1; }
-  identity_matches "$path" "" "$email" || { git -C "$path" config --local user.email "$email"; changed=1; }
+  identity_matches "$path" "$name" "" || { git -C "$path" config --local --replace-all user.name "$name" && changed=1; }
+  identity_matches "$path" "" "$email" || { git -C "$path" config --local --replace-all user.email "$email" && changed=1; }
   install_identity_hook "$path" || echo "  $key: WARN a pre-commit hook that isn't mmm's is in place -- identity is applied but not enforced at commit time"
   if [ "$changed" = 1 ]; then echo "  $key: now commits as ${name:-?} <${email:-?}>"; fi
 }
 
-# verifies the current repo against its project's identity (the pre-commit hook runs this with stdout dropped, so only a mismatch shows)
+# verifies the current repo against its project's identity; the pre-commit hook drops stdout, so only a mismatch (stderr, exit 1) shows at commit time
 cmd_identity() {
   need jq git
   local origin key want_name want_email
   origin=$(git remote get-url origin 2>/dev/null || true)
-  key=""
-  if [ -n "$origin" ]; then key=$(key_for_remote "$origin" || true); fi
-  if [ -n "$key" ]; then
+  if [ -z "$origin" ]; then
+    echo "mmm: not in a git repo with an origin remote -- nothing to check"
+  elif ! key=$(key_for_remote "$origin"); then
+    echo "mmm: $(remote_id "$origin") is not a registered project (an ssh host alias never matches) -- identity not checked; 'mmm init .' registers it"
+  else
     IFS='|' read -r want_name want_email <<<"$(identity_for "$key")"
     if [ "$want_name" = CONFLICT ]; then echo "mmm: $key: domains disagree on the git email ($want_email)" >&2; return 1; fi
-    if [ -n "$want_name$want_email" ]; then
-      if identity_matches . "$want_name" "$want_email"; then
-        echo "mmm: $key commits as $(git config user.name || true) <$(git config user.email || true)> (matches the registry)"
-      else
-        echo "mmm: $key should commit as $want_name <$want_email> but git says $(git config user.name || true) <$(git config user.email || true)> -- run 'mmm doctor' to repair" >&2
-        return 1
-      fi
+    if [ -z "$want_name$want_email" ]; then
+      echo "mmm: $key has no identity configured (registry.json: identity / domains.<d>.identity)"
+    elif identity_matches . "$want_name" "$want_email"; then
+      echo "mmm: $key commits as $(git config user.name || true) <$(git config user.email || true)> (matches the registry)"
+    else
+      echo "mmm: $key should commit as $want_name <$want_email> but git says $(git config user.name || true) <$(git config user.email || true)> -- run 'mmm init .' here to repair" >&2
+      return 1
     fi
   fi
   echo "To edit, see ~/.mmm/registry.json"
@@ -512,6 +514,7 @@ cmd_init_domain() {
     root=$(cd "$root" && pwd)
   fi
 
+  local is_new=0; jq -e --arg d "$d" '.domains[$d]' "$REGISTRY" >/dev/null 2>&1 || is_new=1
   reg_edit --arg d "$d" '.domains[$d] = (.domains[$d] // {sources: []})'
   if [ -n "$root" ]; then reg_edit --arg d "$d" --arg r "$root" '.domains[$d].root = $r'; fi
   if [ "${#from[@]}" -gt 0 ]; then
@@ -527,7 +530,7 @@ cmd_init_domain() {
   local sources; sources=$(jq -r --arg d "$d" '.domains[$d].sources // [] | .[]' "$REGISTRY")
   if [ -z "$sources" ]; then
     if [ -z "$root" ]; then
-      echo "mmm: domain '$d' created (no root, no sources) — 'mmm init <path> --domain $d' joins one project at a time"
+      if [ "$is_new" = 1 ]; then echo "mmm: domain '$d' created (no root, no sources) — 'mmm init <path> --domain $d' joins one project at a time"; fi
       return 0
     fi
     echo "mmm: domain '$d' has no sources yet — host/owner groups found under $root:"
@@ -643,7 +646,7 @@ cmd_doctor() {
     else
       echo "REPAIR: $k commits as $(git -C "$path" config user.name || true) <$(git -C "$path" config user.email || true)>, should be $want_name <$want_email>"
       apply_identity "$k" "$path" >/dev/null
-      echo "PASS: $k now commits as $want_name <$want_email>"
+      if identity_matches "$path" "$want_name" "$want_email"; then echo "PASS: $k now commits as $want_name <$want_email>"; else echo "FAIL: $k still commits as $(git -C "$path" config user.name || true) <$(git -C "$path" config user.email || true)>"; fail=1; fi
     fi
     install_identity_hook "$path" || echo "WARN: $k has a pre-commit hook that isn't mmm's, so its identity isn't enforced at commit time"
   done
@@ -940,7 +943,7 @@ sync_prepare() {
     git clone -q "$url" "$SYNC_DIR"
   fi
   if [ -z "${MMM_PASSWORD:-}" ]; then
-    [ -r /dev/tty ] && : < /dev/tty 2>/dev/null || die "no terminal to prompt on -- pass --password or set MMM_PASSWORD"
+    { : < /dev/tty; } 2>/dev/null || die "no terminal to prompt on -- pass --password or set MMM_PASSWORD"
     read -rsp "mmm: archive password: " MMM_PASSWORD < /dev/tty; echo
   fi
   [ -n "$MMM_PASSWORD" ] || die "an empty password would leave the archive unencrypted"

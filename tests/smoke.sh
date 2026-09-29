@@ -239,6 +239,20 @@ if command -v rsync >/dev/null 2>&1; then
   [ "$(git -C "$T/id/other/plain" config user.email)" = default@example.com ] || fail "a project in no domain should get the default identity"
   ok "init applies the domain identity, and the default to a project outside any domain"
 
+  # init replaces a repo-local email and name that already have several values
+  git -C "$T/id/src/in-dom" config --local --add user.email extra1@example.com; git -C "$T/id/src/in-dom" config --local --add user.email extra2@example.com
+  git -C "$T/id/src/in-dom" config --local --add user.name Extra1; git -C "$T/id/src/in-dom" config --local --add user.name Extra2
+  mI init "$T/id/src/in-dom" >/dev/null 2>&1
+  [ "$(git -C "$T/id/src/in-dom" config --local --get-all user.email)" = vid@example.com ] && [ "$(git -C "$T/id/src/in-dom" config --local --get-all user.name)" = "Test User" ] \
+    || fail "init should collapse multi-valued user.email/user.name to the registry identity"
+  ok "init collapses a multi-valued repo-local identity to one value"
+
+  # mmm identity says why it did not check: an unregistered repo, and a repo outside git
+  mkrepo "$T/id/other/unreg" https://example.invalid/none/unreg.git
+  ( cd "$T/id/other/unreg" && mI identity ) | grep -q "not a registered project" || fail "mmm identity should say an unregistered repo is not checked"
+  ( cd "$T/id" && mI identity ) | grep -q "not in a git repo" || fail "mmm identity should say it is outside a git repo"
+  ok "mmm identity explains when it cannot check"
+
   # doctor repairs a drifted git email
   git -C "$T/id/src/in-dom" config --local user.email wrong@example.com
   mI doctor >"$T/id.out" 2>&1 || true
