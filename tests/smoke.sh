@@ -157,8 +157,8 @@ l5
 l6
 l7"; printf '\n- [[one]]\n'; } > "$T/a/.mmm/global/one.md"
   printf '\n- [[one]]\n' >> "$T/a/.mmm/global/index.md"
-  mA push "$remote" >"$T/sync.out" 2>&1 || { cat "$T/sync.out"; fail "A push"; }
-  mB pull "$remote" >"$T/sync.out" 2>&1 || { cat "$T/sync.out"; fail "B first pull"; }
+  MMM_SYNC_URL="$remote" mA push >"$T/sync.out" 2>&1 || { cat "$T/sync.out"; fail "A push"; }
+  MMM_SYNC_URL="$remote" mB pull >"$T/sync.out" 2>&1 || { cat "$T/sync.out"; fail "B first pull"; }
   [ -f "$T/b/.mmm/global/one.md" ] || fail "B did not receive A's page"
   ok "push then pull on a fresh machine carries the page"
 
@@ -170,6 +170,8 @@ l7"; printf '\n- [[one]]\n'; } > "$T/a/.mmm/global/one.md"
   if mB push >"$T/sync.out" 2>&1; then fail "B push should refuse while the remote is ahead"; fi
   grep -q "pull" "$T/sync.out" || fail "B's refused push did not say to pull"
   mB pull >"$T/sync.out" 2>&1 || { cat "$T/sync.out"; fail "B merge pull"; }
+  [ "$(grep -c -- '-- linking --' "$T/sync.out")" = 1 ] && grep -q "mmm: pulled" "$T/sync.out" \
+    || fail "pull should print one linking header and end with 'mmm: pulled'"
   grep -q "l1-from-a" "$T/b/.mmm/global/one.md" && grep -q "l7-from-b" "$T/b/.mmm/global/one.md" \
     || fail "merge lost one side's edit"
   [ -f "$T/b/.mmm/global/a-new.md" ] && [ -f "$T/b/.mmm/global/b-new.md" ] || fail "merge lost a new page"
@@ -177,6 +179,14 @@ l7"; printf '\n- [[one]]\n'; } > "$T/a/.mmm/global/one.md"
   mA pull >"$T/sync.out" 2>&1 || { cat "$T/sync.out"; fail "A pull"; }
   [ -f "$T/a/.mmm/global/b-new.md" ] || fail "A did not receive B's page"
   ok "edits to different lines and new pages on two machines merge without loss"
+
+  vroot="$T/b/vroot"; mkdir -p "$vroot/proj"
+  git -C "$vroot/proj" init -q; git -C "$vroot/proj" remote add origin https://example.invalid/vid/proj.git
+  printf '# proj\n' > "$vroot/proj/CLAUDE.md"
+  mB init --domain vid "$vroot" --from example.invalid/vid --no-clone >/dev/null 2>&1
+  mB pull >"$T/sync.out" 2>&1 || { cat "$T/sync.out"; fail "B pull with a domain"; }
+  [ "$(grep -c "'proj' already registered" "$T/sync.out")" = 1 ] || { cat "$T/sync.out"; fail "a domain-adopted project should be initialised once per pull"; }
+  ok "pull initialises a domain-adopted project once, not again in the project loop"
 
   sed -i.bak 's/^l4$/l4-from-a/' "$T/a/.mmm/global/one.md"; rm "$T/a/.mmm/global/one.md.bak"
   sed -i.bak 's/^l4$/l4-from-b/' "$T/b/.mmm/global/one.md"; rm "$T/b/.mmm/global/one.md.bak"
