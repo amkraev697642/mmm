@@ -5,6 +5,7 @@ import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
+import { remoteId } from './remote-id.mjs';
 
 let input = '';
 process.stdin.on('data', (d) => { input += d; });
@@ -81,7 +82,7 @@ function resolveProject(cwd, mmmData) {
       .toString().trim();
     const registry = JSON.parse(readFileSync(join(mmmData, 'registry.json'), 'utf8'));
     for (const [key, info] of Object.entries(registry.projects || {})) {
-      if (info.remote === remote) return { key, domains: info.domains || [] };
+      if (remoteId(info.remote) === remoteId(remote)) return { key, domains: info.domains || [] };
     }
   } catch { /* not a git repo, or no matching registry entry */ }
   return null;

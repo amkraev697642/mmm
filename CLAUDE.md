@@ -30,6 +30,9 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
   `push`/`pull` sync through a git repo holding one encrypted `mmm.7z` (clone in `~/.mmm-sync`, outside
   the store): pull builds a "remote" commit from the archive, 3-way merges it against the `mmm-synced`
   branch, and merges `registry.json` by jq instead (per-machine paths). `~/.mmm` itself is still never pushed.
+  Identity: `registry.json`'s top-level `identity` ({name, email}) is the default and `domains[d].identity`
+  overrides it; `init`/`doctor` apply it as repo-local git config and install an untracked pre-commit hook
+  that runs `mmm identity`. Scoped packs strip it so a recipient never inherits your email.
 - **`bin/mmm-query.py`** / **`bin/mmm-doctor.py`** / **`bin/mmm-links.py`** — stdlib-only Python 3 (no pip installs).
   `mmm-query.py` is `rg --json` with wiki-structure awareness (frontmatter hits ranked over
   body hits, results grouped by page). `mmm-doctor.py` does structural checks: broken
@@ -74,7 +77,7 @@ tools (`jq`, `git`, `rsync`, `rg`, `7z`, `claude`) or language stdlib.
 - **`~/.mmm` is a local git repo** (`snapshot()` in `bin/mmm`, `snapshot()` in
   `wiki-brief.mjs`): committed at session start and before pack/unpack, never pushed. `.git` is
   not archived by pack and is skipped by every tree walk (plan-tax "paid" check, page count).
-- **Registry keyed by git remote**, not filesystem path — `resolve_path()` in `bin/mmm` walks
+- **Registry keyed by git remote** (compared via `remote_id()`/`remoteId()`, so ssh and https spellings of one repo match; an ssh host alias does not), not filesystem path — `resolve_path()` in `bin/mmm` walks
   `searchRoots` to relocate a project if its cached `pathHint` no longer matches. A second
   worktree/clone of an already-registered remote shares that project's wiki (one project, one
   wiki); `mmm init --merge` is required if it grew independent content, to avoid silently

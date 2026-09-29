@@ -1,4 +1,5 @@
 #!/bin/sh
+command -v mmm >/dev/null 2>&1 && { mmm identity >/dev/null || exit 1; }
 # bin/mmm's MMM_VERSION is the version SSOT (no git tags) -- keep its build date current
 # so every commit stamps when it was built, not when the string was last hand-edited.
 today=$(date +%d%m%y)

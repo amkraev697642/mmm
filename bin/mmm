@@ -2,7 +2,7 @@
 # mmm — canonical wiki store, symlinked into each project's .omc/wiki. See ~/mmm/README.md.
 set -euo pipefail
 
-MMM_VERSION="0.0.4 build 280926"
+MMM_VERSION="0.0.4 build 290926"
 MMM_HOME="${MMM_HOME:-$HOME/.mmm}"  # private data. ~/mmm (no dot) is the tool itself — bin/, README, .git
 MMM_SELF="${BASH_SOURCE[0]}"
 [ -L "$MMM_SELF" ] && MMM_SELF="$(readlink "$MMM_SELF")"  # one hop is all we ever create
@@ -62,17 +62,32 @@ fi
 
 realpath_of() { python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$1"; }
 expand_tilde() { printf '%s' "${1/#\~/$HOME}"; }
+# rewrites the registry in place with a jq program: options first, program last
+reg_edit() { local tmp; tmp=$(mktemp); jq "$@" "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"; }
 
-# a domain's pointcut is host+owner, not host alone -- github.com carries both your org's repos
-# and third-party clones in the same root. Normalizes git@h:o/r.git, https://h/o/r and
-# ssh://git@h/o/r (no port) to "h/o"; a GitLab subgroup's first path segment counts as the owner.
-host_owner() {
+# one repo, one id however its remote is spelled: git@h:o/r.git, https://h/o/r and ssh://git@h/o/r (no port) all become "h/o/r"
+remote_id() {
   local rest="${1#*://}"
-  rest="${rest#*@}"
-  case "$rest" in *:*) rest="${rest/://}" ;; esac
+  case "${rest%%/*}" in *@*) rest="${rest#*@}" ;; esac
+  case "${rest%%/*}" in *:*) rest="${rest/://}" ;; esac
   rest="${rest%.git}"
-  local host="${rest%%/*}" after="${rest#*/}"
-  printf '%s/%s\n' "$host" "${after%%/*}"
+  printf '%s\n' "${rest%/}"
+}
+
+# a domain's pointcut is host+owner, not host alone -- github.com carries both your org's repos and third-party clones in the same root; a GitLab subgroup's first path segment counts as the owner.
+host_owner() {
+  local id after; id=$(remote_id "$1")
+  after="${id#*/}"
+  printf '%s/%s\n' "${id%%/*}" "${after%%/*}"
+}
+
+# registry key of the project whose registered remote is the same repo as $1, however either is spelled
+key_for_remote() {
+  local want k r; want=$(remote_id "$1")
+  while IFS=$'\t' read -r k r; do
+    if [ "$(remote_id "$r")" = "$want" ]; then echo "$k"; return 0; fi
+  done < <(jq -r '.projects | to_entries[] | [.key, .value.remote] | @tsv' "$REGISTRY")
+  return 1
 }
 
 # mktemp/EnterWorktree-style checkouts live here — never worth a permanent registry entry
@@ -105,7 +120,7 @@ resolve_path() {
   hint=$(expand_tilde "$hint")
   if [ -n "$hint" ] && git -C "$hint" rev-parse --git-dir >/dev/null 2>&1; then
     origin=$(git -C "$hint" remote get-url origin 2>/dev/null || true)
-    if [ "$origin" = "$remote" ]; then echo "$hint"; return 0; fi
+    if [ "$(remote_id "$origin")" = "$(remote_id "$remote")" ]; then echo "$hint"; return 0; fi
   fi
   local root
   while IFS= read -r root; do
@@ -115,7 +130,7 @@ resolve_path() {
     while IFS= read -r gitdir; do
       repo="${gitdir%/.git}"
       origin=$(git -C "$repo" remote get-url origin 2>/dev/null || true)
-      if [ "$origin" = "$remote" ]; then echo "$repo"; return 0; fi
+      if [ "$(remote_id "$origin")" = "$(remote_id "$remote")" ]; then echo "$repo"; return 0; fi
     done < <(find "$root" -maxdepth 5 -type d -name .git 2>/dev/null)
   done < <(jq -r '(.searchRoots // []) + ([.domains // {} | .[] | .root] | map(select(.))) | .[]' "$REGISTRY")
   return 1
@@ -152,8 +167,7 @@ cmd_forget() {
   need jq
   local key="$1"
   jq -e --arg k "$key" '.projects[$k]' "$REGISTRY" >/dev/null 2>&1 || die "no such registered project: $key"
-  local tmp; tmp=$(mktemp)
-  jq --arg k "$key" 'del(.projects[$k])' "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+  reg_edit --arg k "$key" 'del(.projects[$k])'
   echo "mmm: forgot '$key' from the registry"
   if [ -d "$MMM_HOME/projects/$key" ]; then
     echo "mmm: NOTE — $MMM_HOME/projects/$key still has its data; delete it yourself if you don't want it"
@@ -309,6 +323,69 @@ link_auto_memory() {
   echo "  $key: auto memory linked ✓"
 }
 
+# name|email a project should commit as: registry default, then each of its domains' identity on top; CONFLICT|emails if two domains disagree
+identity_for() {
+  jq -r --arg k "$1" '
+    (.identity // {}) as $def
+    | [(.projects[$k].domains // [])[] as $d | (.domains[$d].identity // {})] as $ids
+    | ([$ids[].email | select(.)] | unique) as $emails
+    | if ($emails | length) > 1 then "CONFLICT|" + ($emails | join(","))
+      else (reduce $ids[] as $i ($def; . + $i)) | [(.name // ""), (.email // "")] | join("|") end' "$REGISTRY"
+}
+
+# an empty wanted name or email matches anything
+identity_matches() {
+  { [ -z "$3" ] || [ "$(git -C "$1" config user.email || true)" = "$3" ]; } && { [ -z "$2" ] || [ "$(git -C "$1" config user.name || true)" = "$2" ]; }
+}
+
+IDENTITY_HOOK_MARK="# mmm-identity-hook"
+# untracked per-clone hook, so a team repo is never touched; returns 1 only when a pre-commit that isn't ours is in the way
+install_identity_hook() {
+  local path="$1" hooks hook
+  git -C "$path" config --get core.hooksPath >/dev/null 2>&1 && return 0
+  hooks=$(git -C "$path" rev-parse --git-path hooks)
+  case "$hooks" in /*) ;; *) hooks="$path/$hooks" ;; esac
+  hook="$hooks/pre-commit"
+  if [ -f "$hook" ] && ! grep -qF "$IDENTITY_HOOK_MARK" "$hook"; then return 1; fi
+  mkdir -p "$hooks"
+  printf '#!/bin/sh\n%s\nm=%q\n[ -x "$m" ] || m=$(command -v mmm) || exit 0\nexec "$m" identity >/dev/null\n' "$IDENTITY_HOOK_MARK" "$MMM_BIN/mmm" > "$hook"
+  chmod +x "$hook"
+}
+
+# always returns 0 so one project never stops an init or a pull; a project with no identity configured is left exactly as it was
+apply_identity() {
+  local key="$1" path="$2" name email changed=0
+  IFS='|' read -r name email <<<"$(identity_for "$key")"
+  if [ "$name" = CONFLICT ]; then echo "  $key: WARN domains disagree on the git email ($email) -- identity not applied"; return 0; fi
+  [ -n "$name$email" ] || return 0
+  identity_matches "$path" "$name" "" || { git -C "$path" config --local user.name "$name"; changed=1; }
+  identity_matches "$path" "" "$email" || { git -C "$path" config --local user.email "$email"; changed=1; }
+  install_identity_hook "$path" || echo "  $key: WARN a pre-commit hook that isn't mmm's is in place -- identity is applied but not enforced at commit time"
+  if [ "$changed" = 1 ]; then echo "  $key: now commits as ${name:-?} <${email:-?}>"; fi
+}
+
+# verifies the current repo against its project's identity (the pre-commit hook runs this with stdout dropped, so only a mismatch shows)
+cmd_identity() {
+  need jq git
+  local origin key want_name want_email
+  origin=$(git remote get-url origin 2>/dev/null || true)
+  key=""
+  if [ -n "$origin" ]; then key=$(key_for_remote "$origin" || true); fi
+  if [ -n "$key" ]; then
+    IFS='|' read -r want_name want_email <<<"$(identity_for "$key")"
+    if [ "$want_name" = CONFLICT ]; then echo "mmm: $key: domains disagree on the git email ($want_email)" >&2; return 1; fi
+    if [ -n "$want_name$want_email" ]; then
+      if identity_matches . "$want_name" "$want_email"; then
+        echo "mmm: $key commits as $(git config user.name || true) <$(git config user.email || true)> (matches the registry)"
+      else
+        echo "mmm: $key should commit as $want_name <$want_email> but git says $(git config user.name || true) <$(git config user.email || true)> -- run 'mmm doctor' to repair" >&2
+        return 1
+      fi
+    fi
+  fi
+  echo "To edit, see ~/.mmm/registry.json"
+}
+
 init_one() {
   local key="$1" root="$2" wiki="$3" store="$4" seed="$5" force_merge="$6" kind="${7:-project}"
   # global/domain roots aren't git repos (a domain root is just a folder of repos) -- only an
@@ -371,14 +448,12 @@ cmd_init() {
   local path origin key
   path=$(cd "$target" && pwd)
   origin=$(git -C "$path" remote get-url origin 2>/dev/null) || die "not a git repo with an origin remote: $path"
-  key=$(jq -r --arg r "$origin" '.projects | to_entries[] | select(.value.remote==$r) | .key' "$REGISTRY" | head -1)
+  key=$(key_for_remote "$origin" || true)
   if [ -z "$key" ]; then
     is_under_tmp "$path" && die "refusing to register '$path' as a new project — it's under the OS tmp dir ($TMPROOT), which looks like an ephemeral worktree/clone, not a permanent checkout. If it really is permanent, move it out of tmp first."
     key=$(basename "$path")
     echo "mmm: registering new project '$key' (remote $origin)"
-    local tmp; tmp=$(mktemp)
-    jq --arg k "$key" --arg r "$origin" --arg p "$path" \
-      '.projects[$k] = {remote: $r, pathHint: $p}' "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+    reg_edit --arg k "$key" --arg r "$origin" --arg p "$path" '.projects[$k] = {remote: $r, pathHint: $p}'
   else
     echo "mmm: '$key' already registered (remote $origin) — same project, this is another checkout/worktree of it, sharing its wiki"
   fi
@@ -391,14 +466,11 @@ cmd_init() {
   # domain membership: an explicit --domain always joins (and creates the domain if new); with
   # none given, auto-join every existing domain whose sources match this repo's host/owner
   local ho; ho=$(host_owner "$origin")
-  local d tmp
+  local d
   # bash 3.2 (macOS default) throws "unbound variable" on "${arr[@]}" for an empty array under
   # set -u -- guard every iteration over domains/domains_arr with a length check first, here and below
   if [ "${#domains[@]}" -gt 0 ]; then
-    for d in "${domains[@]}"; do
-      tmp=$(mktemp)
-      jq --arg d "$d" '.domains[$d] = (.domains[$d] // {sources: []})' "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
-    done
+    for d in "${domains[@]}"; do reg_edit --arg d "$d" '.domains[$d] = (.domains[$d] // {sources: []})'; done
   fi
   if [ "${#domains[@]}" -eq 0 ]; then
     while IFS= read -r d; do
@@ -407,12 +479,10 @@ cmd_init() {
   fi
   if [ "${#domains[@]}" -gt 0 ]; then
     local dj; dj=$(printf '%s\n' "${domains[@]}" | jq -R . | jq -s 'unique')
-    tmp=$(mktemp)
-    jq --arg k "$key" --argjson add "$dj" \
-      '.projects[$k].domains = ((.projects[$k].domains // []) + $add | unique)' \
-      "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+    reg_edit --arg k "$key" --argjson add "$dj" '.projects[$k].domains = ((.projects[$k].domains // []) + $add | unique)'
     echo "mmm: '$key' is a member of domain(s): $(IFS=,; echo "${domains[*]}")"
   fi
+  apply_identity "$key" "$path"
   if [ -n "${MMM_TOUCHED:-}" ]; then echo "$path" >> "$MMM_TOUCHED"; fi
 }
 
@@ -442,19 +512,11 @@ cmd_init_domain() {
     root=$(cd "$root" && pwd)
   fi
 
-  local tmp
-  tmp=$(mktemp)
-  jq --arg d "$d" '.domains[$d] = (.domains[$d] // {sources: []})' "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
-  if [ -n "$root" ]; then
-    tmp=$(mktemp)
-    jq --arg d "$d" --arg r "$root" '.domains[$d].root = $r' "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
-  fi
+  reg_edit --arg d "$d" '.domains[$d] = (.domains[$d] // {sources: []})'
+  if [ -n "$root" ]; then reg_edit --arg d "$d" --arg r "$root" '.domains[$d].root = $r'; fi
   if [ "${#from[@]}" -gt 0 ]; then
     local fj; fj=$(printf '%s\n' "${from[@]}" | jq -R . | jq -s .)
-    tmp=$(mktemp)
-    jq --arg d "$d" --argjson add "$fj" \
-      '.domains[$d].sources = ((.domains[$d].sources // []) + $add | unique)' \
-      "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+    reg_edit --arg d "$d" --argjson add "$fj" '.domains[$d].sources = ((.domains[$d].sources // []) + $add | unique)'
   fi
 
   root=$(jq -r --arg d "$d" '.domains[$d].root // empty' "$REGISTRY")
@@ -569,6 +631,22 @@ cmd_doctor() {
       fi
     fi
   done
+  echo "-- git identity --"
+  local want_name want_email
+  for k in $(jq -r '.projects | keys[]' "$REGISTRY"); do
+    path=$(resolve_path "$k") || continue
+    IFS='|' read -r want_name want_email <<<"$(identity_for "$k")"
+    if [ "$want_name" = CONFLICT ]; then echo "FAIL: $k domains disagree on the git email ($want_email)"; fail=1; continue; fi
+    [ -n "$want_name$want_email" ] || continue
+    if identity_matches "$path" "$want_name" "$want_email"; then
+      echo "PASS: $k commits as $(git -C "$path" config user.name || true) <$(git -C "$path" config user.email || true)>"
+    else
+      echo "REPAIR: $k commits as $(git -C "$path" config user.name || true) <$(git -C "$path" config user.email || true)>, should be $want_name <$want_email>"
+      apply_identity "$k" "$path" >/dev/null
+      echo "PASS: $k now commits as $want_name <$want_email>"
+    fi
+    install_identity_hook "$path" || echo "WARN: $k has a pre-commit hook that isn't mmm's, so its identity isn't enforced at commit time"
+  done
   echo "-- symlink health --"
   cmd_status
   [ "$STATUS_ISSUES" -gt 0 ] && fail=1
@@ -642,60 +720,29 @@ cmd_pack() {
     done
   fi
 
-  # a --project/--domain archive that still shipped the FULL registry would leak every other
-  # project's remote URL and local path -- defeating the point of restricting the archive at all.
-  # Build a filtered copy in its own temp dir and add it as a single standalone file (named
-  # exactly "registry.json", so it lands at the path unpack expects); the real file untouched.
-  local registry_src="$REGISTRY" registry_tmpdir=""
+  # a --project/--domain archive that shipped the full registry would leak other projects' remotes and paths, and identity/roots/searchRoots mean nothing to a recipient; an unscoped pack is your own backup and keeps everything
+  local registry_src="$REGISTRY" registry_tmpdir="" key
   if [ -n "$projects" ]; then
     IFS=',' read -ra keys <<< "$projects"
-    local key
     for key in "${keys[@]}"; do
       [ -d "$MMM_HOME/projects/$key" ] || die "unknown/absent project: $key"
       args+=("projects/$key")
     done
-    registry_tmpdir=$(mktemp -d)
-    local keys_json
-    keys_json=$(printf '%s\n' "${keys[@]}" | jq -R . | jq -s .)
-    jq --argjson keys "$keys_json" \
-      '.projects |= with_entries(select(.key as $k | $keys | index($k) != null))' \
-      "$REGISTRY" > "$registry_tmpdir/registry.json"
-    registry_src="$registry_tmpdir/registry.json"
-  elif [ -n "$domain_list" ]; then
-    # --domain matched zero projects: ship the domain wiki/wikis alone, not the whole store
-    registry_tmpdir=$(mktemp -d)
-    jq '.projects = {}' "$REGISTRY" > "$registry_tmpdir/registry.json"
-    registry_src="$registry_tmpdir/registry.json"
-  else
+  elif [ -z "$domain_list" ]; then
     [ -d "$MMM_HOME/projects" ] && args+=(projects)
     [ -d "$MMM_HOME/domains" ] && args+=(domains)
   fi
-
-  # trim to the selected domains: drop every other domain's entry, and drop every shipped
-  # project's membership in a domain that isn't going along -- the same leak the projects filter
-  # above already guards against, just for domain names instead of project keys
-  if [ -n "$domain_list" ]; then
-    [ -n "$registry_tmpdir" ] || { registry_tmpdir=$(mktemp -d); cp "$REGISTRY" "$registry_tmpdir/registry.json"; }
-    local dj; dj=$(printf '%s\n' "${domains_arr[@]}" | jq -R . | jq -s .)
-    local trimmed; trimmed=$(mktemp)
-    jq --argjson doms "$dj" '
-      .domains |= with_entries(select(.key as $k | $doms | index($k) != null)) |
-      .projects |= (with_entries(.value.domains |=
-        (if . then [.[] | select(. as $x | $doms | index($x) != null)] else . end)))
-    ' "$registry_tmpdir/registry.json" > "$trimmed" && mv "$trimmed" "$registry_tmpdir/registry.json"
-    registry_src="$registry_tmpdir/registry.json"
-  fi
-
-  # a --project/--domain archive goes to someone else, not back onto this machine (an unscoped
-  # `mmm pack` is a personal backup and keeps these as-is, since restoring it on another of your
-  # own machines with the same layout is the point). A domain's `root` and top-level
-  # `searchRoots` are local-machine breadcrumbs -- an absolute path with this machine's username
-  # in it, meaningless to a recipient, and exactly what caused a real symlink mixup the one time
-  # this machine re-unpacked its own archive.
-  if [ -n "$registry_tmpdir" ]; then
-    trimmed=$(mktemp)
-    jq 'del(.searchRoots) | .domains |= with_entries(.value |= del(.root))' \
-      "$registry_tmpdir/registry.json" > "$trimmed" && mv "$trimmed" "$registry_tmpdir/registry.json"
+  if [ -n "$projects$domain_list" ]; then
+    registry_tmpdir=$(mktemp -d); registry_src="$registry_tmpdir/registry.json"
+    local csv='split(",") | map(select(. != ""))'
+    jq --argjson keys "$(jq -nc --arg s "$projects" "\$s | $csv")" --argjson doms "$(jq -nc --arg s "$domain_list" "\$s | $csv")" '
+      .projects |= with_entries(select(.key as $k | $keys | index($k) != null))
+      | if ($doms | length) > 0 then
+          .domains |= with_entries(select(.key as $k | $doms | index($k) != null))
+          | .projects |= with_entries(.value.domains |= (if . then [.[] | select(. as $x | $doms | index($x) != null)] else . end))
+        else . end
+      | del(.searchRoots, .identity) | .domains |= with_entries(.value |= del(.root, .identity))
+    ' "$REGISTRY" > "$registry_src"
   fi
 
   # -mhe=on (header encryption) is 7z-format-only; 7z rejects it with E_INVALIDARG for any
@@ -770,11 +817,10 @@ cmd_unpack() {
   # projects the archive doesn't know about, so merge it (archive wins per key) instead
   local before; before=$(cat "$REGISTRY")
   7z x -aoa "$archive" -o"$into"
-  local tmp; tmp=$(mktemp)
-  jq --argjson old "$before" '{searchRoots: (($old.searchRoots // []) + (.searchRoots // []) | unique),
-      domains: (($old.domains // {}) + (.domains // {})),
-      projects: (($old.projects // {}) + (.projects // {}))}' \
-    "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+  reg_edit --argjson old "$before" '{searchRoots: (($old.searchRoots // []) + (.searchRoots // []) | unique),
+      domains: (($old.domains // {}) * (.domains // {})),
+      identity: (($old.identity // {}) + (.identity // {})),
+      projects: (($old.projects // {}) + (.projects // {}))}'
   echo "mmm: unpacked into $into"
   if [ -n "$(store_git status --porcelain)" ]; then
     echo "mmm: the archive changed these files (review with 'mmm git diff', undo one with 'mmm git checkout -- <file>'):"
@@ -791,7 +837,7 @@ cmd_links() { python3 "$MMM_BIN/mmm-links.py" "$MMM_HOME" "$@"; }
 current_tier() {
   local origin key
   origin=$(git remote get-url origin 2>/dev/null) || { echo "$MMM_HOME/global"; return; }
-  key=$(jq -r --arg r "$origin" '.projects | to_entries[] | select(.value.remote==$r) | .key' "$REGISTRY" | head -1)
+  key=$(key_for_remote "$origin" || true)
   if [ -n "$key" ]; then echo "$MMM_HOME/projects/$key"; else echo "$MMM_HOME/global"; fi
 }
 
@@ -959,10 +1005,10 @@ cmd_pull() {
   fi
   # advanced even on conflicts: the merge commit made on resolution has this commit as a parent
   store_git branch -f mmm-synced "$commit"
-  local tmp; tmp=$(mktemp)
-  jq --slurpfile arch "$x/registry.json" '($arch[0] | .domains |= with_entries(.value |= del(.root))) as $a | {searchRoots: (.searchRoots // []),
-      domains: (($a.domains // {}) + (.domains // {})),
-      projects: (($a.projects // {}) + (.projects // {}))}' "$REGISTRY" > "$tmp" && mv "$tmp" "$REGISTRY"
+  reg_edit --slurpfile arch "$x/registry.json" '($arch[0] | .domains = ((.domains // {}) | with_entries(.value |= del(.root)))) as $a | {searchRoots: (.searchRoots // []),
+      domains: (($a.domains // {}) * (.domains // {})),
+      identity: (($a.identity // {}) + (.identity // {})),
+      projects: (($a.projects // {}) + (.projects // {}))}' || die "could not merge the archive's registry into $REGISTRY"
   rm -rf "$x" "$idx"
   link_all
   if [ "$merged" = 0 ]; then
@@ -989,6 +1035,7 @@ usage:
                                       lists the host/owner groups found under root instead of
                                       guessing. A rootless domain is a pure aspect: no on-disk
                                       wiki, join projects one at a time with 'init <path> --domain'
+  mmm identity                       check this repo's git name/email against its domain's (edit ~/.mmm/registry.json)
   mmm doctor                         full health check (links, index, secrets, git-ignore)
   mmm rebalance                      move each project's CLAUDE.md and Claude Code auto memory into the
                                       store, leave symlinks behind (runs automatically before pack)
@@ -1021,6 +1068,7 @@ case "$cmd" in
   status) cmd_status ;;
   init) [ $# -ge 1 ] || die "usage: mmm init <path>|--global [--merge]"; cmd_init "$@" ;;
   doctor) cmd_doctor ;;
+  identity) cmd_identity ;;
   rebalance) cmd_rebalance ;;
   forget) [ $# -ge 1 ] || die "usage: mmm forget <key>"; cmd_forget "$@" ;;
   pack) cmd_pack "$@" ;;

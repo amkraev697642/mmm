@@ -7,6 +7,7 @@ import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 
 import { homedir } from 'node:os';
 import { join, dirname, relative } from 'node:path';
 import { execSync } from 'node:child_process';
+import { remoteId } from './remote-id.mjs';
 
 const mmmData = join(homedir(), '.mmm');
 const statePath = join(homedir(), '.omc', 'state', 'mmm-recall.json');
@@ -64,7 +65,7 @@ function projectKey(remote) {
   if (!remote) return null;
   try {
     const registry = JSON.parse(readFileSync(join(mmmData, 'registry.json'), 'utf8'));
-    for (const [key, info] of Object.entries(registry.projects || {})) if (info.remote === remote) return key;
+    for (const [key, info] of Object.entries(registry.projects || {})) if (remoteId(info.remote) === remoteId(remote)) return key;
   } catch { /* no registry yet */ }
   return null;
 }
@@ -74,7 +75,7 @@ function projectDomains(remote) {
   try {
     const registry = JSON.parse(readFileSync(join(mmmData, 'registry.json'), 'utf8'));
     for (const info of Object.values(registry.projects || {})) {
-      if (info.remote === remote) return info.domains || [];
+      if (remoteId(info.remote) === remoteId(remote)) return info.domains || [];
     }
   } catch { /* no registry yet */ }
   return [];
